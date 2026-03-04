@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Numerical_Solver"
+version = "0.1.0"
+description = "Commercial numerical methods engine"
+authors = [{name="Krishna Vedula"}]
+dependencies = []
+
+[project.scripts]
+numerical-lab = "numerical_lab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
