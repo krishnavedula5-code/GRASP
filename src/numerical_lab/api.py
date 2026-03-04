@@ -192,14 +192,28 @@ def __whoami():
     }
 
 
-if APP_VERSION == "dev":
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[o.strip() for o in allowed_origins],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+
+
+# Vercel frontend origins (add your exact URLs)
+DEFAULT_ORIGINS = [
+    "http://localhost:3000",
+    "https://numerical-ui-deploy-krishnavedula5-codes-projects.vercel.app",
+]
+
+# Allow overriding via env var on Render:
+# CORS_ORIGINS="https://your-ui.vercel.app,https://your-custom-domain.com"
+cors_env = os.getenv("CORS_ORIGINS", "")
+extra = [o.strip() for o in cors_env.split(",") if o.strip()]
+
+allow_origins = list(dict.fromkeys(DEFAULT_ORIGINS + extra))  # dedupe
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------
