@@ -26,3 +26,16 @@ Run the following command in the root directory of the terminal
 .\examples\cubic.ps1
 .\examples\cosx_minus_x.ps1
 .\examples\exp_minus_3x.ps1
+
+### Architecture of NUmerical Lab
+
+Numerical Solver Research Platform
+
+Architecture
+------------
+Frontend: React (Vercel)
+Backend: FastAPI (Render)
+Computation: Numerical Lab Engine
+
+Workflow:
+User → UI → API → Solver Engine → Results
