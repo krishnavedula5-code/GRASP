@@ -16,14 +16,49 @@ import {
 import BadgePills from "./BadgePills";
 import { computeBadges } from "./diagnosticsBadges";
 import { computeHint } from "./diagnosticsHints";
-import DiagnosticsLegend from "./DiagnosticsLegend"; // ✅ casing standardized (Tier-0)
+import DiagnosticsLegend from "./DiagnosticsLegend";
 import EventTimeline from "./EventTimeline";
+
+const BENCHMARKS = [
+  {
+    id: "P1",
+    label: "P1: x^3 - 2x + 2",
+    expr: "x**3 - 2*x + 2",
+    dexpr: "3*x**2 - 2",
+    a: -2,
+    b: 0,
+  },
+  {
+    id: "P2",
+    label: "P2: x^3 - x - 2",
+    expr: "x**3 - x - 2",
+    dexpr: "3*x**2 - 1",
+    a: 1,
+    b: 2,
+  },
+  {
+    id: "P3",
+    label: "P3: cos(x) - x",
+    expr: "cos(x) - x",
+    dexpr: "-sin(x) - 1",
+    a: 0,
+    b: 1,
+  },
+  {
+    id: "P4",
+    label: "P4: (x-1)^2 (x+2)",
+    expr: "((x-1)**2)*(x+2)",
+    dexpr: "2*(x-1)*(x+2) + (x-1)**2",
+    a: -3,
+    b: 2,
+  },
+];
 
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend);
 
 // In dev (localhost:3000), CRA proxy forwards /compare, /runs -> http://localhost:8000
 // In prod (served by FastAPI), same-origin also works.
-const API_URL = process.env.REACT_APP_API_URL || "";
+const API_URL = "";
 
 const METHOD_META = {
   newton: { label: "Newton Method", subtitle: "Quadratic Convergence" },
@@ -34,7 +69,6 @@ const METHOD_META = {
 
 const DEFAULT_RECORDS_LIMIT = 20;
 const DEFAULT_EVENTS_LIMIT = 50;
-
 
 function safeNum(x) {
   const n = Number(x);
@@ -84,7 +118,7 @@ function fmtMaybe(num, kind) {
   return String(n);
 }
 
-// ✅ Send null when empty (prevents Number("") -> 0 surprises)
+// Send null when empty
 function numOrNull(v) {
   if (v === null || v === undefined) return null;
   const s = String(v).trim();
@@ -96,7 +130,7 @@ function numOrNull(v) {
 export default function Home() {
   const navigate = useNavigate();
   const [selectedScenarioId, setSelectedScenarioId] = useState(null);
-
+  const [benchmarkId, setBenchmarkId] = useState("");
   const [expr, setExpr] = useState("x**3 - x - 2");
   const [dexpr, setDexpr] = useState("3*x**2 - 1");
   const [numericalDerivative, setNumericalDerivative] = useState(false);
@@ -104,15 +138,15 @@ export default function Home() {
   const [a, setA] = useState(1);
   const [b, setB] = useState(2);
 
-  // ✅ optional inputs; if blank → backend defaults (midpoint / derived guess)
+  // optional inputs; if blank → backend defaults
   const [x0, setX0] = useState("");
   const [x1, setX1] = useState("");
 
   const [tol, setTol] = useState(1e-10);
   const [maxIter, setMaxIter] = useState(100);
 
-    // ---------------------------------------------------------
-  // Demo Scenarios (Professor-friendly presets)
+  // ---------------------------------------------------------
+  // Demo Scenarios
   // ---------------------------------------------------------
   const DEMO_SCENARIOS = [
     {
@@ -182,8 +216,9 @@ export default function Home() {
   ];
 
   function applyScenario(scn) {
-    
     setSelectedScenarioId(scn.id);
+    setBenchmarkId("");
+
     const p = scn.payload;
 
     setExpr(p.expr);
@@ -193,18 +228,15 @@ export default function Home() {
     setA(p.a);
     setB(p.b);
 
-    // allow optional guesses to be blank; here we set the preset explicitly
     setX0(p.x0);
     setX1(p.x1);
 
     setTol(p.tol);
     setMaxIter(p.maxIter);
 
-    // Reset run outputs so user sees it's a new setup
     setErr("");
     setData(null);
 
-    // Scroll to top (optional, makes it feel polished)
     try {
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch {
@@ -212,14 +244,28 @@ export default function Home() {
     }
   }
 
+  function handleBenchmarkChange(e) {
+    const id = e.target.value;
+    setBenchmarkId(id);
+    setSelectedScenarioId(null);
+
+    const selected = BENCHMARKS.find((b) => b.id === id);
+    if (!selected) return;
+
+    setExpr(selected.expr);
+    setDexpr(selected.dexpr);
+    setA(selected.a);
+    setB(selected.b);
+
+    setErr("");
+    setData(null);
+  }
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [data, setData] = useState(null);
 
-  // collapsible method panels
   const [openPanels, setOpenPanels] = useState({});
-
-  // per-method "show all" toggles
   const [showAllRecords, setShowAllRecords] = useState({});
   const [showAllEvents, setShowAllEvents] = useState({});
 
@@ -237,8 +283,6 @@ export default function Home() {
       });
   }, [data, bestMethod]);
 
-  // Domain warning for log(x): x must be > 0.
-  // Only show when bracket methods (bisection/hybrid) actually fail due to domain/nonfinite.
   const domainMathHint = useMemo(() => {
     if (!data) return null;
 
@@ -268,7 +312,6 @@ export default function Home() {
     return "log(x) undefined for x ≤ 0 → bracket violates function domain.";
   }, [data, expr, a, b]);
 
-  // Prefill inputs when arriving from RunViewer -> "Open as New Experiment"
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (!params.has("expr")) return;
@@ -289,7 +332,6 @@ export default function Home() {
     }
   }, []);
 
-  // Auto-open best panel + initialize show toggles whenever new data arrives
   useEffect(() => {
     if (!data) return;
 
@@ -303,7 +345,7 @@ export default function Home() {
     const initShowEvents = {};
 
     keys.forEach((k) => {
-      initPanels[k] = k === bestMethod; // best open by default
+      initPanels[k] = k === bestMethod;
       initShowRecords[k] = false;
       initShowEvents[k] = false;
     });
@@ -316,10 +358,9 @@ export default function Home() {
   function buildPayload() {
     return {
       expr,
-      dexpr, // backend will ignore if numerical_derivative = true
+      dexpr,
       a: Number(a),
       b: Number(b),
-      // ✅ optional, avoids accidental 0 when user clears field
       x0: numOrNull(x0),
       x1: numOrNull(x1),
       tol: Number(tol),
@@ -370,7 +411,7 @@ export default function Home() {
         throw new Error(txt || `HTTP ${res.status}`);
       }
 
-      const json = await res.json(); // { run_id, url_path }
+      const json = await res.json();
       navigate(json.url_path || `/run/${json.run_id}`);
     } catch (e) {
       setErr(e.message || String(e));
@@ -430,12 +471,11 @@ export default function Home() {
   return (
     <div style={{ fontFamily: "system-ui, Arial", padding: 20, maxWidth: 1100, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 6 }}>Numerical Lab UI</h1>
+      
       <div style={{ color: "#555", marginBottom: 16 }}>
         Teaching-oriented root finding (compare methods + explanations).
       </div>
-            {/* ---------------------------------------------------------
-          Demo Scenarios
-         --------------------------------------------------------- */}
+
       <div
         style={{
           border: "1px solid #ddd",
@@ -468,22 +508,37 @@ export default function Home() {
               <div style={{ fontWeight: 900 }}>{scn.title}</div>
               <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>{scn.subtitle}</div>
             </button>
-            
           ))}
         </div>
+
         {selectedScenarioId && (
-        <div style={{ marginTop: 10, fontSize: 12, color: "#333" }}>
-          Loaded: <b>{DEMO_SCENARIOS.find(s => s.id === selectedScenarioId)?.title}</b>
-        </div>
-      )}
+          <div style={{ marginTop: 10, fontSize: 12, color: "#333" }}>
+            Loaded: <b>{DEMO_SCENARIOS.find((s) => s.id === selectedScenarioId)?.title}</b>
+          </div>
+        )}
 
         <div style={{ marginTop: 10, color: "#666", fontSize: 12 }}>
           Tip: After loading a scenario, click <b>Compare Methods</b> or <b>Create Share Link</b>.
         </div>
       </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 14 }}>
           <h3>Function</h3>
+
+          <label>Benchmark Problem</label>
+          <select
+            value={benchmarkId}
+            onChange={handleBenchmarkChange}
+            style={{ width: "100%", padding: 8, marginTop: 6, marginBottom: 12 }}
+          >
+            <option value="">Select a benchmark...</option>
+            {BENCHMARKS.map((bmk) => (
+              <option key={bmk.id} value={bmk.id}>
+                {bmk.label}
+              </option>
+            ))}
+          </select>
 
           <label>f(x)</label>
           <input
@@ -524,47 +579,46 @@ export default function Home() {
               <input value={b} onChange={(e) => setB(e.target.value)} style={{ width: "100%", padding: 8, marginTop: 6 }} />
             </div>
 
-            {/* Optional guesses (advanced) */}
-<div style={{ gridColumn: "1 / -1" }}>
-  <div
-        style={{
-      marginTop: 10,
-      padding: 12,
-      borderRadius: 12,
-      border: "1px dashed #ddd",
-      background: "#fcfcfc",
-    }}
-  >
-    <div style={{ fontWeight: 800, fontSize: 12, color: "#333", marginBottom: 6 }}>
-      Optional guesses (advanced)
-    </div>
-    <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>
-      Leave blank to use safe defaults (midpoint / bracket endpoint).
-    </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: 12,
+                  borderRadius: 12,
+                  border: "1px dashed #ddd",
+                  background: "#fcfcfc",
+                }}
+              >
+                <div style={{ fontWeight: 800, fontSize: 12, color: "#333", marginBottom: 6 }}>
+                  Optional guesses (advanced)
+                </div>
+                <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>
+                  Leave blank to use safe defaults (midpoint / bracket endpoint).
+                </div>
 
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div>
-              <label style={{ fontSize: 12, color: "#333" }}>x₀ (Newton / Secant)</label>
-              <input
-                value={x0}
-                onChange={(e) => setX0(e.target.value)}
-                placeholder="e.g. 0.0"
-                style={{ width: "100%", padding: 8, marginTop: 6 }}
-              />
-            </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 12, color: "#333" }}>x₀ (Newton / Secant)</label>
+                    <input
+                      value={x0}
+                      onChange={(e) => setX0(e.target.value)}
+                      placeholder="e.g. 0.0"
+                      style={{ width: "100%", padding: 8, marginTop: 6 }}
+                    />
+                  </div>
 
-            <div>
-              <label style={{ fontSize: 12, color: "#333" }}>x₁ (Secant)</label>
-              <input
-                value={x1}
-                onChange={(e) => setX1(e.target.value)}
-                placeholder="e.g. -1.0"
-                style={{ width: "100%", padding: 8, marginTop: 6 }}
-              />
+                  <div>
+                    <label style={{ fontSize: 12, color: "#333" }}>x₁ (Secant)</label>
+                    <input
+                      value={x1}
+                      onChange={(e) => setX1(e.target.value)}
+                      placeholder="e.g. -1.0"
+                      style={{ width: "100%", padding: 8, marginTop: 6 }}
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      </div>
 
             <div>
               <label>tol</label>
