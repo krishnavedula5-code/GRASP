@@ -29,7 +29,7 @@ StopReason = Literal[
     "BAD_BRACKET",
     "DERIVATIVE_ZERO",
     "NAN_INF",
-    "DOMAIN_ERROR"
+    "DOMAIN_ERROR",
     "STAGNATION",
     "EXACT_ROOT",
     "ERROR",
