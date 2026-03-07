@@ -16,6 +16,8 @@ This enables:
 
 from dataclasses import dataclass, field
 from typing import List
+from numerical_lab.expr.safe_eval import compile_expr
+from numerical_lab.methods.newton import NewtonSolver
 
 
 # ------------------------------
@@ -40,6 +42,27 @@ def linspace(a: float, b: float, n: int) -> List[float]:
 
     step = (b - a) / (n - 1)
     return [a + i * step for i in range(n)]
+
+def run_newton_once(
+    expr: str,
+    dexpr: str | None,
+    x0: float,
+    tol: float = 1e-10,
+    max_iter: int = 100,
+):
+    f = compile_expr(expr)
+    df = compile_expr(dexpr) if dexpr else None
+
+    solver = NewtonSolver(
+        f=f,
+        df=df,
+        x0=x0,
+        tol=tol,
+        max_iter=max_iter,
+        numerical_derivative=(dexpr is None),
+    )
+
+    return solver.solve()
 
 
 # ------------------------------
@@ -80,39 +103,65 @@ def cluster_roots(roots: List[float], cluster_tol: float = 1e-6) -> List[RootClu
 # ------------------------------
 
 def discover_roots(
-    roots: List[float],
+    expr: str,
+    dexpr: str | None,
+    xmin: float = -4.0,
+    xmax: float = 4.0,
+    n: int = 1000,
+    tol: float = 1e-10,
+    max_iter: int = 100,
     cluster_tol: float = 1e-6,
+    residual_tol: float = 1e-8,
 ) -> List[RootCluster]:
 
-    """
-    Temporary placeholder version.
+    xs = linspace(xmin, xmax, n)
+    f = compile_expr(expr)
 
-    For now this function only clusters a list of roots.
-    Later we will connect it to solver sweeps.
-    """
+    accepted_roots: List[float] = []
 
-    clusters = cluster_roots(roots, cluster_tol)
+    for x0 in xs:
+        result = run_newton_once(
+            expr=expr,
+            dexpr=dexpr,
+            x0=x0,
+            tol=tol,
+            max_iter=max_iter,
+        )
 
+        candidate = result.root if result.root is not None else result.best_x
+
+        if result.status != "converged":
+            continue
+
+        if candidate is None:
+            continue
+
+        try:
+            fx = f(candidate)
+        except Exception:
+            continue
+
+        if abs(fx) > residual_tol:
+            continue
+
+        accepted_roots.append(float(candidate))
+
+    clusters = cluster_roots(accepted_roots, cluster_tol)
     return clusters
 
-
-# ------------------------------
-# Simple test
-# ------------------------------
-
 if __name__ == "__main__":
-
-    # Example roots produced by solver
-    sample_roots = [
-        1.0000000001,
-        0.9999999999,
-        -2.0000000002,
-        -1.9999999997,
-    ]
-
-    clusters = discover_roots(sample_roots)
+    clusters = discover_roots(
+        expr="(x-1)**2*(x+2)",
+        dexpr="2*(x-1)*(x+2) + (x-1)**2",
+        xmin=-4.0,
+        xmax=4.0,
+        n=200,
+        tol=1e-10,
+        max_iter=100,
+        cluster_tol=1e-4,
+        residual_tol=1e-8,
+    )
 
     print("\nDiscovered clusters:\n")
-
     for c in clusters:
         print(f"root_{c.root_id}: {c.center:.10f}  support={c.support}")
