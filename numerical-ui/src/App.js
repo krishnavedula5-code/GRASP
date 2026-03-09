@@ -8,7 +8,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 // ✅ BrowserRouter: enables URL-based navigation
 // ✅ Routes/Route: declare routes
 // ✅ Navigate: redirect unknown routes to "/"
-
+import ExperimentsDashboard from "./ExperimentsDashboard";
 import Home from "./Home"; 
 // ✅ Home must contain your existing UI (compare + charts + tables)
 // ✅ IMPORTANT: Home.js should export default function Home() { ... }
@@ -27,6 +27,8 @@ export default function App() {
 
         {/* ✅ Shared run page: used for "Share Run" links */}
         <Route path="/run/:runId" element={<RunViewer />} />
+
+        <Route path="/experiments" element={<ExperimentsDashboard />} />
 
         {/* ✅ Catch-all: if user types random URL, send them back home */}
         <Route path="*" element={<Navigate to="/" replace />} />

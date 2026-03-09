@@ -470,8 +470,48 @@ export default function Home() {
 
   return (
     <div style={{ fontFamily: "system-ui, Arial", padding: 20, maxWidth: 1100, margin: "0 auto" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 14,
+          marginBottom: 18,
+          paddingBottom: 10,
+          borderBottom: "1px solid #ddd",
+        }}
+      >
+        <button
+          onClick={() => navigate("/")}
+          style={{
+            border: "1px solid #222",
+            background: "#111",
+            color: "white",
+            padding: "6px 12px",
+            borderRadius: 8,
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          Home
+        </button>
+
+        <button
+          onClick={() => navigate("/experiments")}
+          style={{
+            border: "1px solid #222",
+            background: "white",
+            color: "#111",
+            padding: "6px 12px",
+            borderRadius: 8,
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          Experiments
+        </button>
+      </div>
+
       <h1 style={{ marginBottom: 6 }}>Numerical Lab UI</h1>
-      
+
       <div style={{ color: "#555", marginBottom: 16 }}>
         Teaching-oriented root finding (compare methods + explanations).
       </div>

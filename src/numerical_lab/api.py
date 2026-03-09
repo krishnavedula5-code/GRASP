@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException, Query
-from typing import Optional, Any
-from pydantic import BaseModel, model_validator
+from typing import Optional, Any, List
+from pydantic import BaseModel,Field,  model_validator
 from fastapi.middleware.cors import CORSMiddleware
 from numerical_lab.benchmarks.catalog import list_benchmarks, get_benchmark
-
+from numerical_lab.services.experiment_jobs import create_job, get_job, list_jobs
+from numerical_lab.services.experiments_service import start_sweep_job
 from numerical_lab.engine.controller import NumericalEngine
 from numerical_lab.engine.summary import build_comparison_summary
 from numerical_lab.diagnostics.explain import explain_run
@@ -63,6 +64,14 @@ class CompareRequest(BaseModel):
 class CreateRunResponse(BaseModel):
     run_id: str
     url_path: str
+
+class SweepExperimentRequest(BaseModel):
+    problem_id: Optional[str] = None
+    methods: List[str] = Field(default_factory=lambda: ["newton"])
+    x_min: Optional[float] = None
+    x_max: Optional[float] = None
+    n_points: Optional[int] = 100
+    boundary_method: str = "newton"
 
 
 # ---------------------------------------------------------
@@ -180,6 +189,8 @@ def list_runs(limit: int = 20) -> list[dict]:
 
 app = FastAPI()
 
+app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
+
 # ✅ Enable CORS in BOTH dev and production.
 # If you want to restrict, set NUM_LAB_CORS_ORIGINS on Render to your exact Vercel URL.
 app.add_middleware(
@@ -282,6 +293,49 @@ def compute_compare_payload(req: CompareRequest) -> dict[str, Any]:
 # ---------------------------------------------------------
 # API Endpoints
 # ---------------------------------------------------------
+
+@app.post("/experiments/sweep")
+def create_sweep_experiment(req: SweepExperimentRequest):
+    payload = req.model_dump()
+    job = create_job(job_type="sweep", message="Sweep job created")
+    start_sweep_job(job.job_id, payload)
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "message": job.message,
+    }
+
+
+@app.get("/experiments/jobs")
+def get_experiment_jobs():
+    jobs = list_jobs()
+    return [
+        {
+            "job_id": j.job_id,
+            "job_type": j.job_type,
+            "status": j.status,
+            "progress": j.progress,
+            "message": j.message,
+            "error": j.error,
+        }
+        for j in jobs
+    ]
+
+
+@app.get("/experiments/jobs/{job_id}")
+def get_experiment_job(job_id: str):
+    job = get_job(job_id)
+    if not job:
+        return {"error": "job_not_found"}
+    return {
+        "job_id": job.job_id,
+        "job_type": job.job_type,
+        "status": job.status,
+        "progress": job.progress,
+        "message": job.message,
+        "result": job.result,
+        "error": job.error,
+    }
 
 @app.post("/compare", response_model=None)
 def compare(req: CompareRequest):

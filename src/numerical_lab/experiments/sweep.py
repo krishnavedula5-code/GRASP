@@ -15,7 +15,7 @@ from numerical_lab.methods.newton import NewtonSolver
 from numerical_lab.methods.safeguarded_newton import SafeguardedNewtonSolver
 from numerical_lab.methods.secant import SecantSolver
 from numerical_lab.experiments.discover_roots import RootCluster, discover_roots
-
+from numerical_lab.analytics.sweep_analytics import generate_sweep_analytics
 
 # -----------------------------
 # Problem specification
@@ -863,8 +863,8 @@ def run_all_default_sweeps(
     print("Running sweep:", sweep_id)
 
     all_records: List[SweepRunRecord] = []
-
-    for problem in DEFAULT_PROBLEMS:
+    analytics_manifest: Dict[str, Any] = {}
+    for problem in [p for p in DEFAULT_PROBLEMS if p.problem_id == "p4"]:
         records = run_problem_sweeps(
             problem,
             scalar_points=scalar_points,
@@ -878,6 +878,14 @@ def run_all_default_sweeps(
         records_to_csv(records, sweep_path / f"{problem.problem_id}_runs.csv")
         records_to_json(records, sweep_path / f"{problem.problem_id}_runs.json")
 
+        methods_present = sorted({r.method for r in records if r.method})
+        analytics_dir = sweep_path / problem.problem_id
+
+        analytics_manifest[problem.problem_id] = generate_sweep_analytics(
+            rows=[asdict(r) for r in records],
+            methods=methods_present,
+            outdir=analytics_dir,
+        )
     summary = summarize_records(all_records, max_iter=max_iter)
     records_to_csv(all_records, sweep_path / "records.csv")
     records_to_json(all_records, sweep_path / "records.json")
@@ -897,11 +905,17 @@ def run_all_default_sweeps(
     with open(sweep_path / "metadata.json", "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
-    return summary
+    return {
+        "summary": summary,
+        "analytics": analytics_manifest,
+        "metadata": metadata,
+        "sweep_id": sweep_id,
+        "sweep_path": str(sweep_path),
+    }
 
 
 if __name__ == "__main__":
-    summary = run_all_default_sweeps(
+    result = run_all_default_sweeps(
         output_dir="outputs/sweeps",
         scalar_points=100,
         secant_points=100,
@@ -910,4 +924,5 @@ if __name__ == "__main__":
         max_iter=100,
     )
     print("DONE")
-    print(json.dumps(summary["p1:newton"], indent=2))
+    print(json.dumps(result["summary"]["p4:newton"], indent=2))
+    print(json.dumps(result["analytics"]["p4"], indent=2))

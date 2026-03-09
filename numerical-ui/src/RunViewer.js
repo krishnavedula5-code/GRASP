@@ -294,8 +294,25 @@ export default function RunViewer() {
 
   return (
     <div style={{ fontFamily: "system-ui, Arial", padding: 20, maxWidth: 1100, margin: "0 auto" }}>
-      <div style={{ marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <Link to="/">← Back</Link>
+      <div
+        style={{
+          marginBottom: 16,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          borderBottom: "1px solid #ddd",
+          paddingBottom: 10,
+        }}
+      >
+        <div style={{ display: "flex", gap: 12 }}>
+          <Link to="/" style={{ fontWeight: 700 }}>
+            Home
+          </Link>
+
+          <Link to="/experiments" style={{ fontWeight: 700 }}>
+            Experiments
+          </Link>
+        </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <button
