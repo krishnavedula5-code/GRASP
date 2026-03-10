@@ -5,3 +5,4 @@ scipy
 sympy
 pydantic
 python-multipart
+matplotlib
