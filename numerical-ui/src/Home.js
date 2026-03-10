@@ -1,7 +1,7 @@
 // src/Home.js
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-
+import { API } from "./api";
 import { Line } from "react-chartjs-2";
 import {
   Chart as ChartJS,
@@ -58,7 +58,7 @@ ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip,
 
 // In dev (localhost:3000), CRA proxy forwards /compare, /runs -> http://localhost:8000
 // In prod (served by FastAPI), same-origin also works.
-const API_URL = process.env.REACT_APP_API_URL || "";
+const API_URL = API,
 
 const METHOD_META = {
   newton: { label: "Newton Method", subtitle: "Quadratic Convergence" },
