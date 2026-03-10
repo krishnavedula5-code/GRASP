@@ -5,11 +5,13 @@ import time
 import urllib.request
 from datetime import datetime
 
+
 # -----------------------------
 # Config
 # -----------------------------
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = BASE_URL = "https://root-finding-reliability-framework.onrender.com"
 COMPARE_URL = BASE_URL + "/compare"
+SWEEP_URL = BASE_URL + "/experiments/sweep"
 
 OUT_DIR = "sweeps_out"
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -91,7 +93,7 @@ def run_sweep(problem_tag, expr, dexpr):
         }
 
         try:
-            resp = post_json(COMPARE_URL, payload)
+            resp = post_json(SWEEP_URL, payload)
 
             # Store minimal + useful fields; keep whole response too if you want
             rec = {
