@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, List
 
 
+# -------------------------------------------------------
+# Job model
+# -------------------------------------------------------
+
 @dataclass
 class ExperimentJob:
     job_id: str
@@ -24,8 +28,12 @@ class ExperimentJob:
     error: Optional[str] = None
 
 
+# -------------------------------------------------------
+# In-memory job store
+# -------------------------------------------------------
+
 _JOBS: Dict[str, ExperimentJob] = {}
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 
 
 # -------------------------------------------------------
@@ -50,8 +58,24 @@ def create_job(job_type: str, message: str = "") -> ExperimentJob:
 # -------------------------------------------------------
 
 def get_job(job_id: str) -> Optional[ExperimentJob]:
+    """
+    Safely fetch a job.
+    """
     with _LOCK:
         return _JOBS.get(job_id)
+
+
+def require_job(job_id: str) -> ExperimentJob:
+    """
+    Same as get_job but raises explicit error if missing.
+    """
+    with _LOCK:
+        job = _JOBS.get(job_id)
+
+    if job is None:
+        raise KeyError("job_not_found")
+
+    return job
 
 
 def list_jobs() -> List[ExperimentJob]:
@@ -59,11 +83,13 @@ def list_jobs() -> List[ExperimentJob]:
     Returns jobs sorted newest first.
     """
     with _LOCK:
-        return sorted(
-            _JOBS.values(),
-            key=lambda j: j.created_at,
-            reverse=True
-        )
+        jobs = list(_JOBS.values())
+
+    return sorted(
+        jobs,
+        key=lambda j: j.created_at,
+        reverse=True
+    )
 
 
 # -------------------------------------------------------
@@ -114,7 +140,12 @@ def set_progress(job_id: str, progress: float, message: str = "") -> Optional[Ex
         return job
 
 
-def complete_job(job_id: str, result: Optional[Dict[str, Any]] = None, message: str = "") -> Optional[ExperimentJob]:
+def complete_job(
+    job_id: str,
+    result: Optional[Dict[str, Any]] = None,
+    message: str = ""
+) -> Optional[ExperimentJob]:
+
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
