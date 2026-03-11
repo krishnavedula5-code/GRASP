@@ -1,0 +1,7 @@
+cff-version: 1.2.0
+title: Numerical Solver Reliability Framework
+message: If you use this software, please cite it.
+authors:
+  - family-names: Vedula
+    given-names: Krishna
+date-released: 2026
