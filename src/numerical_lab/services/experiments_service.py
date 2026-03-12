@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
 from dataclasses import asdict
+
+from numerical_lab.diagnostics.adaptive_boundaries import run_adaptive_boundary_refinement
+from numerical_lab.engine.controller import NumericalEngine
 
 from numerical_lab.services.sampling import generate_initial_points
 from numerical_lab.analytics.sweep_analytics import generate_sweep_analytics
@@ -111,6 +115,90 @@ def _compute_cluster_tol(problem, n_points: int, tol: float, sampling_mode: str 
         spacing_scale = 0.0
 
     return max(10.0 * float(tol), 0.25 * float(spacing_scale))
+
+
+def _make_scalar_callable(expr: str):
+    """
+    Minimal safe expression callable for adaptive refinement.
+    Supports common math expressions in x.
+    """
+    allowed_names = {
+        name: getattr(math, name)
+        for name in dir(math)
+        if not name.startswith("_")
+    }
+    allowed_names["abs"] = abs
+
+    def f(x: float):
+        local_env = dict(allowed_names)
+        local_env["x"] = x
+        return eval(expr, {"__builtins__": {}}, local_env)
+
+    return f
+
+
+def _build_problem_callables(problem):
+    f = _make_scalar_callable(problem.expr)
+    df = _make_scalar_callable(problem.dexpr) if getattr(problem, "dexpr", None) else None
+    return f, df
+
+
+def _run_adaptive_refinement_safe(
+    *,
+    records,
+    methods,
+    problem,
+    sweep_path: Path,
+):
+    """
+    Run adaptive boundary refinement without breaking the sweep job.
+    Starts with Newton only.
+    """
+    adaptive_boundary_artifacts = {}
+    supported_methods = {"newton"}
+
+    try:
+        f, df = _build_problem_callables(problem)
+        x_min, x_max = problem.scalar_range
+        engine = NumericalEngine()
+
+        for method in methods:
+            if method not in supported_methods:
+                continue
+
+            method_records = [asdict(r) for r in records if getattr(r, "method", None) == method]
+            if len(method_records) < 2:
+                continue
+
+            try:
+                method_outdir = sweep_path / f"adaptive_boundaries_{method}"
+
+                adaptive_boundary_artifacts[method] = run_adaptive_boundary_refinement(
+                    records=method_records,
+                    engine=engine,
+                    f=f,
+                    df=df,
+                    method=method,
+                    domain=(float(x_min), float(x_max)),
+                    output_dir=method_outdir,
+                    root_digits=8,
+                    iteration_jump_threshold=8,
+                    tol_x=1e-4,
+                    max_depth=12,
+                    solve_tol=1e-10,
+                    max_iter=100,
+                )
+            except Exception as e:
+                adaptive_boundary_artifacts[method] = {
+                    "error": str(e),
+                }
+
+    except Exception as e:
+        adaptive_boundary_artifacts["_global"] = {
+            "error": str(e),
+        }
+
+    return adaptive_boundary_artifacts
 
 
 def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
@@ -246,6 +334,13 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             cluster_tol=cluster_tol,
         )
 
+        adaptive_boundary_artifacts = _run_adaptive_refinement_safe(
+            records=records,
+            methods=methods_requested,
+            problem=problem,
+            sweep_path=sweep_path,
+        )
+
         metadata = {
             "problem_mode": problem_mode,
             "problem_id": problem.problem_id,
@@ -267,8 +362,8 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             "cluster_tol": cluster_tol,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
-        with open(metadata_json_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2)
+        with open(metadata_json_path, "w", encoding="utf-8") as fmeta:
+            json.dump(metadata, fmeta, indent=2)
 
         update_job(
             job_id,
@@ -283,8 +378,8 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
         matched = []
 
         if sampling_mode == "grid" and hasattr(boundary_module, "detect_boundaries"):
-            with open(records_csv_path, newline="", encoding="utf-8") as f:
-                rows = list(csv.DictReader(f))
+            with open(records_csv_path, newline="", encoding="utf-8") as fcsv:
+                rows = list(csv.DictReader(fcsv))
 
             subset = [
                 r
@@ -402,6 +497,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             "boundary_analysis": boundary_analysis,
             "boundary_artifact": boundary_artifact_url,
             "boundary_summary_artifact": boundary_summary_artifact_url,
+            "adaptive_boundary_artifacts": adaptive_boundary_artifacts,
             "boundary_overlay": boundary_overlay_url,
             "artifacts": {
                 "basin_map": (
