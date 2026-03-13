@@ -7,6 +7,7 @@ from numerical_lab.methods.bisection import BisectionSolver
 from numerical_lab.methods.newton import NewtonSolver
 from numerical_lab.methods.secant import SecantSolver
 from numerical_lab.methods.safeguarded_newton import SafeguardedNewtonSolver
+from numerical_lab.methods.brent import BrentSolver
 
 from numerical_lab.diagnostics.convergence import classify_convergence
 from numerical_lab.diagnostics.stability import detect_stability
@@ -64,6 +65,14 @@ class NumericalEngine:
         report = classify_convergence(result)
         stab = detect_stability(result)
 
+        return result, report, stab
+    
+    @staticmethod
+    def solve_brent(f: Callable[[float], float], a: float, b: float, **kwargs):
+        solver = BrentSolver(f, a, b, **kwargs)
+        result = solver.solve()
+        report = classify_convergence(result)
+        stab = detect_stability(result)
         return result, report, stab
 
     @staticmethod
@@ -134,11 +143,15 @@ class NumericalEngine:
             f, df, a, b, **kwargs
         )
 
+        brent_res, brent_rep, brent_stab = NumericalEngine.solve_brent(
+            f, a, b, **kwargs
+        )
+
         results["bisection"] = (bis_res, bis_rep, bis_stab)
         results["newton"] = (new_res, new_rep, new_stab)
         results["secant"] = (sec_res, sec_rep, sec_stab)
         results["hybrid"] = (hyb_res, hyb_rep, hyb_stab)
-
+        results["brent"] = (brent_res, brent_rep, brent_stab)
         # Safeguarded Newton
         if df is not None:
             try:

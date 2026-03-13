@@ -146,8 +146,42 @@ def _cluster_roots(root_values: list[float], cluster_tol: float) -> list[list[fl
 
 
 def _cluster_label(cluster: list[float]) -> str:
-    center = sum(cluster) / len(cluster)
-    return f"{center:.4f}"
+    center = _cluster_center(cluster)
+    return f"{center:.6f}"
+
+def _cluster_center(cluster: list[float]) -> float:
+    return sum(cluster) / len(cluster)
+
+
+def _build_root_label_map(root_values: list[float], cluster_tol: float) -> dict[float, str]:
+    """
+    Build a mapping from each raw root value to its clustered root label.
+    """
+    clusters = _cluster_roots(root_values, cluster_tol=cluster_tol)
+    label_map: dict[float, str] = {}
+
+    for cluster in clusters:
+        label = _cluster_label(cluster)
+        for x in cluster:
+            label_map[x] = label
+
+    return label_map
+
+
+def _canonicalize_root_values(root_values: list[float], cluster_tol: float) -> tuple[list[list[float]], dict[float, str]]:
+    """
+    Return both clusters and raw-root -> cluster-label mapping.
+    """
+    xs = [x for x in root_values if math.isfinite(x)]
+    clusters = _cluster_roots(xs, cluster_tol=cluster_tol)
+    label_map: dict[float, str] = {}
+
+    for cluster in clusters:
+        label = _cluster_label(cluster)
+        for x in cluster:
+            label_map[x] = label
+
+    return clusters, label_map
 
 
 def compute_basin_entropy(rows: list[dict], method: str, cluster_tol: float) -> dict:
@@ -162,7 +196,7 @@ def compute_basin_entropy(rows: list[dict], method: str, cluster_tol: float) -> 
             continue
         root_values.append(root_value)
 
-    clusters = _cluster_roots(root_values, cluster_tol=cluster_tol)
+    clusters, _ = _canonicalize_root_values(root_values, cluster_tol=cluster_tol)
 
     if not clusters:
         return {
@@ -219,7 +253,7 @@ def compute_root_basin_statistics(
             continue
         root_values.append(root_value)
 
-    clusters = _cluster_roots(root_values, cluster_tol=cluster_tol)
+    clusters, _ = _canonicalize_root_values(root_values, cluster_tol=cluster_tol)
 
     basin_counts = {
         _cluster_label(cluster): len(cluster)
@@ -316,59 +350,41 @@ def save_root_basin_statistics(
 
 def plot_root_basin_distribution(rows, method, outdir, cluster_tol=1e-6):
     """
-    Plot how many initial conditions converge to each root.
-
+    Plot how many initial conditions converge to each clustered root.
     This reveals basin size dominance.
     """
-
-    roots = []
+    root_values = []
 
     for r in rows:
-        if r.get("method") != method:
+        if str(r.get("method", "")).strip().lower() != method.strip().lower():
             continue
 
-        if r.get("status") != "converged":
+        if str(r.get("status", "")).strip().lower() != "converged":
             continue
 
-        root = r.get("root")
-
-        if root is None:
+        root = _extract_root(r)
+        if root is None or not math.isfinite(root):
             continue
 
-        try:
-            roots.append(float(root))
-        except Exception:
-            continue
+        root_values.append(root)
 
-    if not roots:
+    if not root_values:
         return None
 
-    clusters = defaultdict(int)
+    clusters, _ = _canonicalize_root_values(root_values, cluster_tol=cluster_tol)
 
-    for root in roots:
-        assigned = False
+    basin_counts = {
+        _cluster_label(cluster): len(cluster)
+        for cluster in clusters
+    }
 
-        for c in list(clusters.keys()):
-            if abs(root - c) <= cluster_tol:
-                clusters[c] += 1
-                assigned = True
-                break
-
-        if not assigned:
-            clusters[root] += 1
-
-    xs = list(clusters.keys())
-    ys = list(clusters.values())
-
-    xs_sorted = sorted(range(len(xs)), key=lambda i: xs[i])
-    xs = [xs[i] for i in xs_sorted]
-    ys = [ys[i] for i in xs_sorted]
+    labels = sorted(basin_counts.keys(), key=lambda x: float(x))
+    counts = [basin_counts[label] for label in labels]
 
     plt.figure(figsize=(6, 4))
-    plt.bar(range(len(xs)), ys)
-
-    plt.xticks(range(len(xs)), [f"{x:.4f}" for x in xs], rotation=45)
-    plt.xlabel("Root")
+    plt.bar(range(len(labels)), counts)
+    plt.xticks(range(len(labels)), labels, rotation=45)
+    plt.xlabel("Clustered Root")
     plt.ylabel("Number of Converged Initializations")
     plt.title(f"Basin Size Distribution — {method}")
 
@@ -532,7 +548,7 @@ def save_initialization_histogram(
     rows: list[dict],
     method: str,
     outpath: str | Path,
-) -> str:
+) -> str | None:
     outpath = Path(outpath)
     outpath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -546,24 +562,16 @@ def save_initialization_histogram(
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    if xs:
-        bins = min(30, max(5, int(math.sqrt(len(xs)))))
-        ax.hist(xs, bins=bins)
-        ax.set_xlabel("Initial guess x0")
-        ax.set_ylabel("Frequency")
-        ax.set_title(f"Initialization Histogram — {method}")
-        ax.grid(True, alpha=0.3)
-    else:
-        ax.text(
-            0.5,
-            0.5,
-            "No initialization data available",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-        )
-        ax.set_title(f"Initialization Histogram — {method}")
-        ax.set_axis_off()
+    if not xs:
+        plt.close(fig)
+        return None
+
+    bins = min(30, max(5, int(math.sqrt(len(xs)))))
+    ax.hist(xs, bins=bins)
+    ax.set_xlabel("Initial guess x0")
+    ax.set_ylabel("Frequency")
+    ax.set_title(f"Initialization Histogram — {method}")
+    ax.grid(True, alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(outpath, dpi=150, bbox_inches="tight")
@@ -575,7 +583,7 @@ def save_initial_x_vs_root_plot(
     rows: list[dict],
     method: str,
     outpath: str | Path,
-) -> str:
+) -> str | None:
     outpath = Path(outpath)
     outpath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -601,23 +609,15 @@ def save_initial_x_vs_root_plot(
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    if xs:
-        ax.scatter(xs, ys, s=20, alpha=0.8)
-        ax.set_xlabel("Initial guess x0")
-        ax.set_ylabel("Converged root")
-        ax.set_title(f"Initial Guess vs Converged Root — {method}")
-        ax.grid(True, alpha=0.3)
-    else:
-        ax.text(
-            0.5,
-            0.5,
-            "No converged root data available",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-        )
-        ax.set_title(f"Initial Guess vs Converged Root — {method}")
-        ax.set_axis_off()
+    if not xs:
+        plt.close(fig)
+        return None
+
+    ax.scatter(xs, ys, s=20, alpha=0.8)
+    ax.set_xlabel("Initial guess x0")
+    ax.set_ylabel("Converged root")
+    ax.set_title(f"Initial Guess vs Converged Root — {method}")
+    ax.grid(True, alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(outpath, dpi=150, bbox_inches="tight")
@@ -629,7 +629,7 @@ def save_initial_x_vs_iterations_plot(
     rows: list[dict],
     method: str,
     outpath: str | Path,
-) -> str:
+) -> str | None:
     outpath = Path(outpath)
     outpath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -655,23 +655,15 @@ def save_initial_x_vs_iterations_plot(
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    if xs:
-        ax.scatter(xs, ys, c=colors, s=20, alpha=0.8)
-        ax.set_xlabel("Initial guess x0")
-        ax.set_ylabel("Iterations")
-        ax.set_title(f"Initial Guess vs Iterations — {method}")
-        ax.grid(True, alpha=0.3)
-    else:
-        ax.text(
-            0.5,
-            0.5,
-            "No iteration data available",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-        )
-        ax.set_title(f"Initial Guess vs Iterations — {method}")
-        ax.set_axis_off()
+    if not xs:
+        plt.close(fig)
+        return None
+
+    ax.scatter(xs, ys, c=colors, s=20, alpha=0.8)
+    ax.set_xlabel("Initial guess x0")
+    ax.set_ylabel("Iterations")
+    ax.set_title(f"Initial Guess vs Iterations — {method}")
+    ax.grid(True, alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(outpath, dpi=150, bbox_inches="tight")
@@ -1032,13 +1024,18 @@ def generate_sweep_analytics(
         init_root_path = outdir / f"initial_x_vs_root_{method}.png"
         init_iter_path = outdir / f"initial_x_vs_iterations_{method}.png"
 
-        save_initialization_histogram(rows, method, init_hist_path)
-        save_initial_x_vs_root_plot(rows, method, init_root_path)
-        save_initial_x_vs_iterations_plot(rows, method, init_iter_path)
+        saved_init_hist = save_initialization_histogram(rows, method, init_hist_path)
+        saved_init_root = save_initial_x_vs_root_plot(rows, method, init_root_path)
+        saved_init_iter = save_initial_x_vs_iterations_plot(rows, method, init_iter_path)
 
-        initialization_histogram[method] = str(init_hist_path)
-        initial_x_vs_root[method] = str(init_root_path)
-        initial_x_vs_iterations[method] = str(init_iter_path)
+        if saved_init_hist is not None:
+            initialization_histogram[method] = saved_init_hist
+
+        if saved_init_root is not None:
+            initial_x_vs_root[method] = saved_init_root
+
+        if saved_init_iter is not None:
+            initial_x_vs_iterations[method] = saved_init_iter
 
     summary_path = outdir / "comparison_summary.json"
     summary_data = save_comparison_summary(rows, methods, summary_path)

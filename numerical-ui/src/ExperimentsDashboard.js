@@ -10,7 +10,95 @@ const METHOD_OPTIONS = [
   "bisection",
   "hybrid",
   "safeguarded_newton",
+  "brent",
 ];
+
+// Keep this conservative until boundary refinement supports more methods well.
+const BOUNDARY_METHOD_OPTIONS = ["newton"];
+
+const BENCHMARK_DETAILS = {
+  p1: {
+    expr: "x**3 - 2*x + 2",
+    dexpr: "3*x**2 - 2",
+    note: "Cubic benchmark with challenging Newton behavior.",
+  },
+  p2: {
+    expr: "x**3 - x - 2",
+    dexpr: "3*x**2 - 1",
+    note: "Classic nonlinear cubic with a real root.",
+  },
+  p3: {
+    expr: "cos(x) - x",
+    dexpr: "-sin(x) - 1",
+    note: "Fixed-point style benchmark with a unique real root.",
+  },
+  p4: {
+    expr: "(x - 1)**2 * (x + 2)",
+    dexpr: "2*(x - 1)*(x + 2) + (x - 1)**2",
+    note: "Multiple-root benchmark useful for basin and stability analysis.",
+  },
+};
+
+function SummaryCard({ label, value }) {
+  return (
+    <div style={styles.summaryCard}>
+      <div style={styles.summaryLabel}>{label}</div>
+      <div style={styles.summaryValue}>{value || "-"}</div>
+    </div>
+  );
+}
+
+function SectionCard({ title, isOpen, onToggle, description, children }) {
+  return (
+    <div style={styles.section}>
+      <div style={styles.card}>
+        <button type="button" onClick={onToggle} style={styles.sectionToggle}>
+          <span>{title}</span>
+          <span>{isOpen ? "▾" : "▸"}</span>
+        </button>
+        {isOpen && (
+          <div style={{ marginTop: 12 }}>
+            {description ? (
+              <p style={styles.sectionDescription}>{description}</p>
+            ) : null}
+            {children}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlotGrid({ entries, emptyText, altPrefix, prettyMethod }) {
+  const [hidden, setHidden] = useState({});
+
+  const visibleEntries = (entries || []).filter(([name]) => !hidden[name]);
+
+  if (visibleEntries.length === 0) {
+    return <p style={styles.mutedText}>{emptyText}</p>;
+  }
+
+  return (
+    <div style={styles.plotGrid}>
+      {visibleEntries.map(([name, url]) => (
+        <div key={name} style={styles.plotCard}>
+          <div style={styles.plotCardTitle}>{prettyMethod(name)}</div>
+          <img
+            src={url}
+            alt={`${altPrefix} ${name}`}
+            style={styles.plotImage}
+            onError={() =>
+              setHidden((prev) => ({
+                ...prev,
+                [name]: true,
+              }))
+            }
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function ExperimentsDashboard() {
   const [jobId, setJobId] = useState(null);
@@ -32,7 +120,9 @@ export default function ExperimentsDashboard() {
     wakeBackendOnly,
     runWithWarmup,
   } = useBackendWarmup({ autoPoll: true, pollIntervalMs: 25000 });
-  const [showInitializationSampling, setShowInitializationSampling] = useState(true);
+
+  const [showInitializationSampling, setShowInitializationSampling] =
+    useState(true);
   const [problemMode, setProblemMode] = useState("benchmark");
   const [problemId, setProblemId] = useState("p4");
 
@@ -50,6 +140,7 @@ export default function ExperimentsDashboard() {
     "bisection",
     "hybrid",
     "safeguarded_newton",
+    "brent",
   ]);
   const [nPoints, setNPoints] = useState(100);
   const [tol, setTol] = useState(1e-10);
@@ -79,13 +170,27 @@ export default function ExperimentsDashboard() {
 
   const [showArtifacts, setShowArtifacts] = useState(true);
 
+  const [showInitializationHistograms, setShowInitializationHistograms] =
+    useState(true);
+  const [showInitialGuessVsRoot, setShowInitialGuessVsRoot] = useState(true);
+  const [showInitialGuessVsIterations, setShowInitialGuessVsIterations] =
+    useState(true);
+
   const pollRef = useRef(null);
+
+  const benchmarkInfo = BENCHMARK_DETAILS[problemId] || null;
 
   useEffect(() => {
     return () => {
       stopPolling();
     };
   }, []);
+
+  useEffect(() => {
+    if (!BOUNDARY_METHOD_OPTIONS.includes(boundaryMethod)) {
+      setBoundaryMethod(BOUNDARY_METHOD_OPTIONS[0]);
+    }
+  }, [boundaryMethod]);
 
   function stopPolling() {
     if (pollRef.current) {
@@ -113,12 +218,25 @@ export default function ExperimentsDashboard() {
     const numericGaussianMean = Number(gaussianMean);
     const numericGaussianStd = Number(gaussianStd);
 
+    const sMin = Number(scalarMin);
+    const sMax = Number(scalarMax);
+    const bMin = Number(bracketMin);
+    const bMax = Number(bracketMax);
+
     if (!Number.isFinite(numericTol) || numericTol <= 0) {
       throw new Error("Tolerance must be a positive number.");
     }
 
     if (!Number.isFinite(numericMaxIter) || numericMaxIter < 1) {
       throw new Error("Max Iter must be at least 1.");
+    }
+
+    if (!Number.isFinite(sMin) || !Number.isFinite(sMax) || sMin >= sMax) {
+      throw new Error("Scalar/domain range is invalid. Ensure min < max.");
+    }
+
+    if (!Number.isFinite(bMin) || !Number.isFinite(bMax) || bMin >= bMax) {
+      throw new Error("Bracket search range is invalid. Ensure min < max.");
     }
 
     if (samplingMode === "grid") {
@@ -155,19 +273,6 @@ export default function ExperimentsDashboard() {
     if (!String(expr || "").trim()) {
       throw new Error("Custom expression f(x) is required.");
     }
-
-    const sMin = Number(scalarMin);
-    const sMax = Number(scalarMax);
-    const bMin = Number(bracketMin);
-    const bMax = Number(bracketMax);
-
-    if (!Number.isFinite(sMin) || !Number.isFinite(sMax) || sMin >= sMax) {
-      throw new Error("Scalar range is invalid. Ensure min < max.");
-    }
-
-    if (!Number.isFinite(bMin) || !Number.isFinite(bMax) || bMin >= bMax) {
-      throw new Error("Bracket search range is invalid. Ensure min < max.");
-    }
   }
 
   function buildPayload() {
@@ -179,12 +284,12 @@ export default function ExperimentsDashboard() {
     const numericGaussianMean = Number(gaussianMean);
     const numericGaussianStd = Number(gaussianStd);
 
-    if (problemMode === "custom") {
-      const sMin = Number(scalarMin);
-      const sMax = Number(scalarMax);
-      const bMin = Number(bracketMin);
-      const bMax = Number(bracketMax);
+    const sMin = Number(scalarMin);
+    const sMax = Number(scalarMax);
+    const bMin = Number(bracketMin);
+    const bMax = Number(bracketMax);
 
+    if (problemMode === "custom") {
       const payload = {
         problem_mode: "custom",
         problem_id: null,
@@ -236,10 +341,22 @@ export default function ExperimentsDashboard() {
       tol: numericTol,
       max_iter: numericMaxIter,
       boundary_method: boundaryMethod,
+      x_min: sMin,
+      x_max: sMax,
+      scalar_range: {
+        x_min: sMin,
+        x_max: sMax,
+      },
+      bracket_search_range: {
+        x_min: bMin,
+        x_max: bMax,
+      },
     };
 
     if (samplingMode === "grid") {
       payload.n_points = numericNPoints;
+      payload.scalar_range.n_points = numericNPoints;
+      payload.bracket_search_range.n_points = numericNPoints;
     }
 
     if (samplingMode === "uniform") {
@@ -393,6 +510,12 @@ export default function ExperimentsDashboard() {
     return num.toFixed(4);
   }
 
+  function normalizePlotEntries(entries) {
+    return (entries || [])
+      .map(([name, path]) => [name, toOutputUrl(path)])
+      .filter(([, url]) => !!url);
+  }
+
   function renderArtifactLink(label, path) {
     const url = toOutputUrl(path);
     if (!url) return null;
@@ -428,23 +551,21 @@ export default function ExperimentsDashboard() {
     toOutputUrl(analytics?.basin_entropy_plot) ||
     toOutputUrl(analytics?.basin_entropy_comparison_plot);
 
-  const rootDistributionEntries = analytics?.basin_root_distribution
-    ? Object.entries(analytics.basin_root_distribution)
-    : [];
-
   const comparisonRows = analytics?.comparison_summary_data?.methods || [];
   const entropyRows = analytics?.basin_entropy_data?.methods || [];
 
   const paretoMeanUrl = toOutputUrl(analytics?.pareto?.mean_vs_failure);
   const paretoMedianUrl = toOutputUrl(analytics?.pareto?.median_vs_failure);
 
-  const failureRegionEntries = analytics?.failure_region
-    ? Object.entries(analytics.failure_region)
-    : [];
+  const basinDistributionEntries = normalizePlotEntries(
+    analytics?.basin_distribution ? Object.entries(analytics.basin_distribution) : []
+  );
 
-  const basinDistributionEntries = analytics?.basin_distribution
-    ? Object.entries(analytics.basin_distribution)
-    : [];
+  const rootDistributionEntries = normalizePlotEntries(
+    analytics?.basin_root_distribution
+      ? Object.entries(analytics.basin_root_distribution)
+      : []
+  );
 
   const detectedRoots = Array.from(
     new Set(
@@ -454,23 +575,35 @@ export default function ExperimentsDashboard() {
     )
   ).sort((a, b) => Number(a) - Number(b));
 
-  const initializationHistogramEntries = analytics?.initialization_histogram
-    ? Object.entries(analytics.initialization_histogram)
-    : [];
+  const initializationHistogramEntries = normalizePlotEntries(
+    analytics?.initialization_histogram
+      ? Object.entries(analytics.initialization_histogram)
+      : []
+  );
 
-  const initialXVsRootEntries = analytics?.initial_x_vs_root
-    ? Object.entries(analytics.initial_x_vs_root)
-    : [];
+  const initialXVsRootEntries = normalizePlotEntries(
+    analytics?.initial_x_vs_root
+      ? Object.entries(analytics.initial_x_vs_root)
+      : []
+  );
 
-  const initialXVsIterationsEntries = analytics?.initial_x_vs_iterations
-    ? Object.entries(analytics.initial_x_vs_iterations)
-    : [];
+  const initialXVsIterationsEntries = normalizePlotEntries(
+    analytics?.initial_x_vs_iterations
+      ? Object.entries(analytics.initial_x_vs_iterations)
+      : []
+  );
 
-  const histogramEntries = analytics?.histogram
-    ? Object.entries(analytics.histogram)
-    : [];
+  const histogramEntries = normalizePlotEntries(
+    analytics?.histogram ? Object.entries(analytics.histogram) : []
+  );
 
-  const ccdfEntries = analytics?.ccdf ? Object.entries(analytics.ccdf) : [];
+  const ccdfEntries = normalizePlotEntries(
+    analytics?.ccdf ? Object.entries(analytics.ccdf) : []
+  );
+
+  const failureRegionEntries = normalizePlotEntries(
+    analytics?.failure_region ? Object.entries(analytics.failure_region) : []
+  );
 
   const boundaryRegions = Array.isArray(result?.boundaries)
     ? result.boundaries
@@ -602,6 +735,21 @@ export default function ExperimentsDashboard() {
       ? result?.n_points ?? nPoints
       : result?.n_samples ?? nSamples;
 
+  const overviewExpr =
+    result?.expr ||
+    (problemMode === "benchmark" ? benchmarkInfo?.expr : expr) ||
+    "-";
+
+  const overviewDexpr =
+    result?.dexpr ||
+    (problemMode === "benchmark" ? benchmarkInfo?.dexpr : dexpr) ||
+    "-";
+
+  const overviewRangeMin =
+    result?.scalar_range?.[0] ?? result?.scalar_range?.x_min ?? scalarMin;
+  const overviewRangeMax =
+    result?.scalar_range?.[1] ?? result?.scalar_range?.x_max ?? scalarMax;
+
   return (
     <div style={styles.page}>
       <div style={styles.breadcrumbRow}>
@@ -642,20 +790,84 @@ export default function ExperimentsDashboard() {
           </div>
 
           {problemMode === "benchmark" ? (
-            <div>
-              <label style={styles.label}>Problem</label>
-              <select
-                value={problemId}
-                onChange={(e) => setProblemId(e.target.value)}
-                disabled={running || isPreparingRun}
-                style={styles.input}
-              >
-                <option value="p1">p1</option>
-                <option value="p2">p2</option>
-                <option value="p3">p3</option>
-                <option value="p4">p4</option>
-              </select>
-            </div>
+            <>
+              <div>
+                <label style={styles.label}>Problem</label>
+                <select
+                  value={problemId}
+                  onChange={(e) => setProblemId(e.target.value)}
+                  disabled={running || isPreparingRun}
+                  style={styles.input}
+                >
+                  {Object.entries(BENCHMARK_DETAILS).map(([key, info]) => (
+                    <option key={key} value={key}>
+                      {key} - {info.expr}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ gridColumn: "1 / -1" }}>
+                <div style={styles.problemInfoBox}>
+                  <div style={styles.problemInfoTitle}>
+                    Benchmark Definition
+                  </div>
+                  <div style={styles.problemInfoText}>
+                    <b>f(x)</b> = {benchmarkInfo?.expr || "-"}
+                  </div>
+                  <div style={styles.problemInfoText}>
+                    <b>f&apos;(x)</b> = {benchmarkInfo?.dexpr || "-"}
+                  </div>
+                  {benchmarkInfo?.note ? (
+                    <div style={styles.problemInfoNote}>{benchmarkInfo.note}</div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div>
+                <label style={styles.label}>Domain Min</label>
+                <input
+                  type="number"
+                  value={scalarMin}
+                  onChange={(e) => setScalarMin(e.target.value)}
+                  disabled={running || isPreparingRun}
+                  style={styles.input}
+                />
+              </div>
+
+              <div>
+                <label style={styles.label}>Domain Max</label>
+                <input
+                  type="number"
+                  value={scalarMax}
+                  onChange={(e) => setScalarMax(e.target.value)}
+                  disabled={running || isPreparingRun}
+                  style={styles.input}
+                />
+              </div>
+
+              <div>
+                <label style={styles.label}>Bracket Search Min</label>
+                <input
+                  type="number"
+                  value={bracketMin}
+                  onChange={(e) => setBracketMin(e.target.value)}
+                  disabled={running || isPreparingRun}
+                  style={styles.input}
+                />
+              </div>
+
+              <div>
+                <label style={styles.label}>Bracket Search Max</label>
+                <input
+                  type="number"
+                  value={bracketMax}
+                  onChange={(e) => setBracketMax(e.target.value)}
+                  disabled={running || isPreparingRun}
+                  style={styles.input}
+                />
+              </div>
+            </>
           ) : (
             <>
               <div style={{ gridColumn: "1 / -1" }}>
@@ -746,11 +958,11 @@ export default function ExperimentsDashboard() {
               disabled={running || isPreparingRun}
               style={styles.input}
             >
-              <option value="newton">newton</option>
-              <option value="secant">secant</option>
-              <option value="hybrid">hybrid</option>
-              <option value="bisection">bisection</option>
-              <option value="safeguarded_newton">safeguarded_newton</option>
+              {BOUNDARY_METHOD_OPTIONS.map((m) => (
+                <option key={m} value={m}>
+                  {prettyMethod(m)}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -1024,6 +1236,14 @@ export default function ExperimentsDashboard() {
                 }
                 value={String(effectiveSampleCount)}
               />
+              {effectiveSamplingMode === "grid" && (
+                <SummaryCard
+                  label="Range"
+                  value={`[${formatNumber(overviewRangeMin)}, ${formatNumber(
+                    overviewRangeMax
+                  )}]`}
+                />
+              )}
               <SummaryCard
                 label="Random Seed"
                 value={
@@ -1048,6 +1268,18 @@ export default function ExperimentsDashboard() {
                 label="Boundary Regions"
                 value={boundarySummaryText}
               />
+            </div>
+
+            <div style={styles.subsectionSpacer}>
+              <div style={styles.cardMuted}>
+                <h3 style={styles.subsectionTitle}>Problem Definition</h3>
+                <div style={styles.problemInfoText}>
+                  <b>f(x)</b> = {overviewExpr}
+                </div>
+                <div style={styles.problemInfoText}>
+                  <b>f&apos;(x)</b> = {overviewDexpr}
+                </div>
+              </div>
             </div>
 
             <div style={styles.subsectionSpacer}>
@@ -1297,29 +1529,12 @@ export default function ExperimentsDashboard() {
               isOpen={showBasinDistribution}
               onToggle={() => setShowBasinDistribution((v) => !v)}
             >
-              {basinDistributionEntries.length > 0 ? (
-                <div style={styles.plotGrid}>
-                  {basinDistributionEntries.map(([methodName, path]) => (
-                    <div key={`basin-${methodName}`} style={styles.plotCard}>
-                      <div style={styles.plotCardTitle}>
-                        {prettyMethod(methodName)}
-                      </div>
-                      <img
-                        src={toOutputUrl(path)}
-                        alt={`Basin distribution for ${methodName}`}
-                        style={styles.plotImage}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={styles.mutedText}>
-                  No basin distribution artifacts available.
-                </p>
-              )}
+              <PlotGrid
+                entries={basinDistributionEntries}
+                emptyText="No basin distribution artifacts available."
+                altPrefix="Basin distribution for"
+                prettyMethod={prettyMethod}
+              />
             </SectionCard>
 
             <SectionCard
@@ -1327,29 +1542,12 @@ export default function ExperimentsDashboard() {
               isOpen={showRootBasinSize}
               onToggle={() => setShowRootBasinSize((v) => !v)}
             >
-              {rootDistributionEntries.length > 0 ? (
-                <div style={styles.plotGrid}>
-                  {rootDistributionEntries.map(([method, path]) => (
-                    <div key={method} style={styles.plotCard}>
-                      <div style={styles.plotCardTitle}>
-                        {prettyMethod(method)}
-                      </div>
-                      <img
-                        src={toOutputUrl(path)}
-                        alt={`Root basin distribution for ${method}`}
-                        style={styles.plotImage}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={styles.mutedText}>
-                  No root basin distribution available.
-                </p>
-              )}
+              <PlotGrid
+                entries={rootDistributionEntries}
+                emptyText="No root basin distribution available."
+                altPrefix="Root basin distribution for"
+                prettyMethod={prettyMethod}
+              />
             </SectionCard>
           </SectionCard>
 
@@ -1361,80 +1559,41 @@ export default function ExperimentsDashboard() {
           >
             <SectionCard
               title="Initialization Histograms"
-              isOpen={true}
-              onToggle={() => {}}
+              isOpen={showInitializationHistograms}
+              onToggle={() => setShowInitializationHistograms((v) => !v)}
             >
-              {initializationHistogramEntries.length > 0 ? (
-                <div style={styles.plotGrid}>
-                  {initializationHistogramEntries.map(([methodName, path]) => (
-                    <div key={`init-hist-${methodName}`} style={styles.plotCard}>
-                      <div style={styles.plotCardTitle}>{prettyMethod(methodName)}</div>
-                      <img
-                        src={toOutputUrl(path)}
-                        alt={`Initialization histogram for ${methodName}`}
-                        style={styles.plotImage}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={styles.mutedText}>No initialization histogram artifacts available.</p>
-              )}
+              <PlotGrid
+                entries={initializationHistogramEntries}
+                emptyText="No initialization histogram artifacts available."
+                altPrefix="Initialization histogram for"
+                prettyMethod={prettyMethod}
+              />
             </SectionCard>
 
             <SectionCard
               title="Initial Guess vs Converged Root"
-              isOpen={true}
-              onToggle={() => {}}
+              isOpen={showInitialGuessVsRoot}
+              onToggle={() => setShowInitialGuessVsRoot((v) => !v)}
             >
-              {initialXVsRootEntries.length > 0 ? (
-                <div style={styles.plotGrid}>
-                  {initialXVsRootEntries.map(([methodName, path]) => (
-                    <div key={`init-root-${methodName}`} style={styles.plotCard}>
-                      <div style={styles.plotCardTitle}>{prettyMethod(methodName)}</div>
-                      <img
-                        src={toOutputUrl(path)}
-                        alt={`Initial guess vs converged root for ${methodName}`}
-                        style={styles.plotImage}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={styles.mutedText}>No initial guess vs root artifacts available.</p>
-              )}
+              <PlotGrid
+                entries={initialXVsRootEntries}
+                emptyText="No initial guess vs root artifacts available."
+                altPrefix="Initial guess vs converged root for"
+                prettyMethod={prettyMethod}
+              />
             </SectionCard>
 
             <SectionCard
               title="Initial Guess vs Iterations"
-              isOpen={true}
-              onToggle={() => {}}
+              isOpen={showInitialGuessVsIterations}
+              onToggle={() => setShowInitialGuessVsIterations((v) => !v)}
             >
-              {initialXVsIterationsEntries.length > 0 ? (
-                <div style={styles.plotGrid}>
-                  {initialXVsIterationsEntries.map(([methodName, path]) => (
-                    <div key={`init-iter-${methodName}`} style={styles.plotCard}>
-                      <div style={styles.plotCardTitle}>{prettyMethod(methodName)}</div>
-                      <img
-                        src={toOutputUrl(path)}
-                        alt={`Initial guess vs iterations for ${methodName}`}
-                        style={styles.plotImage}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={styles.mutedText}>No initial guess vs iterations artifacts available.</p>
-              )}
+              <PlotGrid
+                entries={initialXVsIterationsEntries}
+                emptyText="No initial guess vs iterations artifacts available."
+                altPrefix="Initial guess vs iterations for"
+                prettyMethod={prettyMethod}
+              />
             </SectionCard>
           </SectionCard>
 
@@ -1449,29 +1608,12 @@ export default function ExperimentsDashboard() {
               isOpen={showFailureRegions}
               onToggle={() => setShowFailureRegions((v) => !v)}
             >
-              {failureRegionEntries.length > 0 ? (
-                <div style={styles.plotGrid}>
-                  {failureRegionEntries.map(([methodName, path]) => (
-                    <div key={`fail-${methodName}`} style={styles.plotCard}>
-                      <div style={styles.plotCardTitle}>
-                        {prettyMethod(methodName)}
-                      </div>
-                      <img
-                        src={toOutputUrl(path)}
-                        alt={`Failure region for ${methodName}`}
-                        style={styles.plotImage}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={styles.mutedText}>
-                  No failure region artifacts available.
-                </p>
-              )}
+              <PlotGrid
+                entries={failureRegionEntries}
+                emptyText="No failure region artifacts available."
+                altPrefix="Failure region for"
+                prettyMethod={prettyMethod}
+              />
             </SectionCard>
           </SectionCard>
 
@@ -1581,27 +1723,12 @@ export default function ExperimentsDashboard() {
               isOpen={showHistograms}
               onToggle={() => setShowHistograms((v) => !v)}
             >
-              {histogramEntries.length > 0 ? (
-                <div style={styles.plotGrid}>
-                  {histogramEntries.map(([methodName, path]) => (
-                    <div key={`hist-${methodName}`} style={styles.plotCard}>
-                      <div style={styles.plotCardTitle}>
-                        {prettyMethod(methodName)}
-                      </div>
-                      <img
-                        src={toOutputUrl(path)}
-                        alt={`Iteration histogram for ${methodName}`}
-                        style={styles.plotImage}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={styles.mutedText}>No histogram artifacts available.</p>
-              )}
+              <PlotGrid
+                entries={histogramEntries}
+                emptyText="No histogram artifacts available."
+                altPrefix="Iteration histogram for"
+                prettyMethod={prettyMethod}
+              />
             </SectionCard>
 
             <SectionCard
@@ -1609,27 +1736,12 @@ export default function ExperimentsDashboard() {
               isOpen={showCcdfs}
               onToggle={() => setShowCcdfs((v) => !v)}
             >
-              {ccdfEntries.length > 0 ? (
-                <div style={styles.plotGrid}>
-                  {ccdfEntries.map(([methodName, path]) => (
-                    <div key={`ccdf-${methodName}`} style={styles.plotCard}>
-                      <div style={styles.plotCardTitle}>
-                        {prettyMethod(methodName)}
-                      </div>
-                      <img
-                        src={toOutputUrl(path)}
-                        alt={`Iteration CCDF for ${methodName}`}
-                        style={styles.plotImage}
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p style={styles.mutedText}>No CCDF artifacts available.</p>
-              )}
+              <PlotGrid
+                entries={ccdfEntries}
+                emptyText="No CCDF artifacts available."
+                altPrefix="Iteration CCDF for"
+                prettyMethod={prettyMethod}
+              />
             </SectionCard>
           </SectionCard>
 
@@ -1691,36 +1803,6 @@ export default function ExperimentsDashboard() {
           </SectionCard>
         </div>
       )}
-    </div>
-  );
-}
-
-function SummaryCard({ label, value }) {
-  return (
-    <div style={styles.summaryCard}>
-      <div style={styles.summaryLabel}>{label}</div>
-      <div style={styles.summaryValue}>{value || "-"}</div>
-    </div>
-  );
-}
-
-function SectionCard({ title, isOpen, onToggle, description, children }) {
-  return (
-    <div style={styles.section}>
-      <div style={styles.card}>
-        <button type="button" onClick={onToggle} style={styles.sectionToggle}>
-          <span>{title}</span>
-          <span>{isOpen ? "▾" : "▸"}</span>
-        </button>
-        {isOpen && (
-          <div style={{ marginTop: 12 }}>
-            {description ? (
-              <p style={styles.sectionDescription}>{description}</p>
-            ) : null}
-            {children}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -1838,6 +1920,34 @@ const styles = {
     marginBottom: 14,
     color: "#4b5563",
     fontSize: 14,
+  },
+
+  problemInfoBox: {
+    background: "#f8fafc",
+    border: "1px solid #dbe2ea",
+    borderRadius: 12,
+    padding: 14,
+  },
+
+  problemInfoTitle: {
+    fontSize: 14,
+    fontWeight: 700,
+    marginBottom: 8,
+    color: "#111827",
+  },
+
+  problemInfoText: {
+    fontSize: 14,
+    color: "#1f2937",
+    marginBottom: 4,
+    wordBreak: "break-word",
+  },
+
+  problemInfoNote: {
+    marginTop: 8,
+    fontSize: 13,
+    color: "#6b7280",
+    lineHeight: 1.5,
   },
 
   card: {

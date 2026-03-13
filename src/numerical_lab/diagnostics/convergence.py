@@ -91,6 +91,7 @@ def classify_convergence(result: SolverResult) -> ConvergenceReport:
                 classification="diverging",
                 notes=notes + ["Residuals increased significantly; likely diverging."],
             )
+    
 
     # Estimate observed order from step errors
     p = estimate_observed_order(result.step_error_history)
@@ -110,11 +111,14 @@ def classify_convergence(result: SolverResult) -> ConvergenceReport:
     elif 0.8 <= p < 1.2:
         cls = "linear"
         notes.append(f"Observed order ≈ {p:.3f} (linear convergence).")
-    elif 1.2 <= p < 1.9:
+    elif 1.2 <= p < 1.7:
         cls = "superlinear"
         notes.append(f"Observed order ≈ {p:.3f} (superlinear convergence).")
+    elif 1.7 <= p < 2.3:
+        cls = "qudratic"
+        notes.append(f"Observed order ≈ {p:.3f} (quadratic convergence).")
     else:
-        cls = "quadratic_or_better"
-        notes.append(f"Observed order ≈ {p:.3f} (quadratic or better convergence).")
+        cls = "super quadratic"
+        notes.append(f"Observed order ≈ {p:.3f} (super quadratic or better convergence).")
 
     return ConvergenceReport(observed_order=p, classification=cls, notes=notes)

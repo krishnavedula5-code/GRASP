@@ -96,6 +96,7 @@ class SweepExperimentRequest(BaseModel):
             "bisection",
             "hybrid",
             "safeguarded_newton",
+            "brent",
         ]
     )
 
@@ -121,6 +122,15 @@ class SweepExperimentRequest(BaseModel):
         mode = str(self.problem_mode or "benchmark").lower().strip()
         sampling_mode = str(self.sampling_mode or "grid").lower().strip()
 
+        allowed_methods = {
+            "newton",
+            "secant",
+            "bisection",
+            "hybrid",
+            "safeguarded_newton",
+            "brent",
+        }
+
         if mode not in {"benchmark", "custom"}:
             raise ValueError("problem_mode must be benchmark or custom")
 
@@ -135,6 +145,19 @@ class SweepExperimentRequest(BaseModel):
 
         if not self.methods:
             raise ValueError("At least one method must be selected")
+
+        normalized_methods = []
+        for m in self.methods:
+            mm = str(m).strip().lower()
+            if mm not in allowed_methods:
+                raise ValueError(f"Unsupported method: {m}")
+            normalized_methods.append(mm)
+        self.methods = normalized_methods
+
+        boundary_method = str(self.boundary_method or "newton").strip().lower()
+        if boundary_method not in allowed_methods:
+            raise ValueError(f"Unsupported boundary_method: {self.boundary_method}")
+        self.boundary_method = boundary_method
 
         if sampling_mode == "grid":
             if self.n_points < 2:
@@ -168,7 +191,6 @@ class SweepExperimentRequest(BaseModel):
                 raise ValueError("x_min must be < x_max")
 
         return self
-    
 
 # ---------------------------------------------------------
 # Helpers

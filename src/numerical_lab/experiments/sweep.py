@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from numerical_lab.expr.safe_eval import compile_expr
 from numerical_lab.methods.bisection import BisectionSolver
+from numerical_lab.methods.brent import BrentSolver
 from numerical_lab.methods.hybrid import HybridBisectionNewtonSolver
 from numerical_lab.methods.newton import NewtonSolver
 from numerical_lab.methods.safeguarded_newton import SafeguardedNewtonSolver
@@ -82,6 +83,7 @@ SUPPORTED_METHODS = {
     "bisection",
     "hybrid",
     "safeguarded_newton",
+    "brent",
 }
 
 
@@ -109,7 +111,7 @@ def safe_float(x: Any) -> Optional[float]:
 
 def normalize_methods(methods: Optional[Sequence[str]]) -> List[str]:
     if not methods:
-        return ["newton", "secant", "bisection", "hybrid", "safeguarded_newton"]
+        return ["newton", "secant", "bisection", "hybrid", "safeguarded_newton", "brent"]
 
     out: List[str] = []
     seen = set()
@@ -512,6 +514,17 @@ def run_bisection(
     return solver.solve()
 
 
+def run_brent(
+    f: Callable[[float], float],
+    a: float,
+    b: float,
+    tol: float,
+    max_iter: int,
+) -> Any:
+    solver = BrentSolver(f=f, a=a, b=b, tol=tol, max_iter=max_iter)
+    return solver.solve()
+
+
 def run_hybrid(
     f: Callable[[float], float],
     df: Callable[[float], float],
@@ -619,6 +632,7 @@ def run_problem_sweeps(
         secant_initial_points = linspace(s_min, s_max, secant_points + 1)
     else:
         secant_initial_points = [float(x) for x in secant_initial_points]
+
     # bracket_initial_points reserved for future bracket-sampling support.
     # Current implementation still uses sign-change bracket discovery on bracket_search_range.
     if bracket_initial_points is not None:
@@ -707,12 +721,13 @@ def run_problem_sweeps(
                         clusters=discovered_clusters,
                     )
                 )
+
     # Note:
     # Bracketing-based methods currently use sign-change bracket discovery over
     # problem.bracket_search_range. They do not yet consume bracket_initial_points
     # or Monte Carlo-style sampled bracket seeds.
     need_brackets = any(
-        m in methods_to_run for m in ("bisection", "hybrid", "safeguarded_newton")
+        m in methods_to_run for m in ("bisection", "hybrid", "safeguarded_newton", "brent")
     )
 
     if need_brackets:
@@ -745,6 +760,34 @@ def run_problem_sweeps(
                         result_to_record(
                             problem,
                             "bisection",
+                            i,
+                            None,
+                            a=a,
+                            b=b,
+                            error_message=str(exc),
+                            clusters=discovered_clusters,
+                        )
+                    )
+
+            if "brent" in methods_to_run:
+                try:
+                    res = run_brent(f, a=a, b=b, tol=tol, max_iter=max_iter)
+                    records.append(
+                        result_to_record(
+                            problem,
+                            "brent",
+                            i,
+                            res,
+                            a=a,
+                            b=b,
+                            clusters=discovered_clusters,
+                        )
+                    )
+                except Exception as exc:
+                    records.append(
+                        result_to_record(
+                            problem,
+                            "brent",
                             i,
                             None,
                             a=a,
@@ -1143,7 +1186,7 @@ def run_all_default_sweeps(
     for problem in DEFAULT_PROBLEMS:
         records = run_problem_sweeps(
             problem,
-            methods=["newton", "secant", "bisection", "hybrid", "safeguarded_newton"],
+            methods=["newton", "secant", "bisection", "hybrid", "safeguarded_newton", "brent"],
             scalar_points=scalar_points,
             secant_points=secant_points,
             bracket_points=bracket_points,
@@ -1198,7 +1241,7 @@ if __name__ == "__main__":
     result = run_single_sweep_experiment(
         problem_mode="benchmark",
         problem_id="p4",
-        methods=["newton", "secant", "bisection", "hybrid", "safeguarded_newton"],
+        methods=["newton", "secant", "bisection", "hybrid", "safeguarded_newton", "brent"],
         n_points=100,
         tol=1e-10,
         max_iter=100,
