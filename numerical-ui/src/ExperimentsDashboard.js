@@ -1219,6 +1219,8 @@ export default function ExperimentsDashboard() {
       problem_mode: problemMode,
       problem_id: problemMode === "benchmark" ? problemId : null,
       methods: selectedMethods,
+      gaussian_mean: Number(gaussianMean),
+      gaussian_std: Number(gaussianStd),
       distribution: mcConfig.distributionType,
       n_samples: Number(mcConfig.nSamples),
       random_seed: Number(mcConfig.randomSeed),
