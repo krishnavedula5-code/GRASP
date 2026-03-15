@@ -143,9 +143,14 @@ def _make_scalar_callable(expr: str):
     return f
 
 
-def _build_problem_callables(problem):
+def _build_problem_callables(problem, numerical_derivative: bool = False):
     f = _make_scalar_callable(problem.expr)
-    df = _make_scalar_callable(problem.dexpr) if getattr(problem, "dexpr", None) else None
+
+    if numerical_derivative:
+        df = None
+    else:
+        df = _make_scalar_callable(problem.dexpr) if getattr(problem, "dexpr", None) else None
+
     return f, df
 
 
@@ -155,6 +160,7 @@ def _run_adaptive_refinement_safe(
     methods,
     problem,
     sweep_path: Path,
+    numerical_derivative: bool = False,
 ):
     """
     Run adaptive boundary refinement without breaking the sweep job.
@@ -164,7 +170,10 @@ def _run_adaptive_refinement_safe(
     supported_methods = {"newton"}
 
     try:
-        f, df = _build_problem_callables(problem)
+        f, df = _build_problem_callables(
+            problem,
+            numerical_derivative=numerical_derivative,
+        )
         x_min, x_max = problem.scalar_range
         engine = NumericalEngine()
 
@@ -220,7 +229,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
 
         problem_mode = str(payload.get("problem_mode", "benchmark")).strip().lower()
         boundary_method = str(payload.get("boundary_method", "newton")).strip().lower()
-
+        numerical_derivative = bool(payload.get("numerical_derivative", False))
         n_points = int(payload.get("n_points", 100))
         max_iter = int(payload.get("max_iter", 100))
         tol = float(payload.get("tol", 1e-10))
@@ -297,6 +306,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             secant_initial_points=secant_initial_points,
             tol=tol,
             max_iter=max_iter,
+            numerical_derivative=numerical_derivative,
         )
 
         update_job(
@@ -402,7 +412,9 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
                 expectations=problem_expectations,
                 analytics=analytics,
                 failure_analysis=failure_analysis,
+                metadata=metadata,
             )
+
 
             print(
                 "[debug] interpretation_summary keys:",
@@ -424,7 +436,9 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             methods=methods_requested,
             problem=problem,
             sweep_path=sweep_path,
+            numerical_derivative=numerical_derivative,
         )
+
 
         metadata = {
             "experiment_type": "sweep",
@@ -432,6 +446,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             "problem_id": problem.problem_id,
             "expr": problem.expr,
             "dexpr": problem.dexpr,
+            "numerical_derivative": numerical_derivative,
             "scalar_range": list(problem.scalar_range),
             "secant_range": list(problem.secant_range),
             "bracket_search_range": list(problem.bracket_search_range),
@@ -587,6 +602,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             "boundary_dir": boundaries_base_url,
             "problem_mode": problem_mode,
             "problem_id": problem.problem_id,
+            "numerical_derivative": numerical_derivative,
             "sampling_mode": sampling_mode,
             "n_samples": n_samples,
             "random_seed": random_seed,

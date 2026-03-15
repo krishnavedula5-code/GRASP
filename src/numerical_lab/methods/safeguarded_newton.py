@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Callable, Optional
 from numerical_lab.core.base import RootSolver, SolverResult
 
@@ -16,16 +17,21 @@ class SafeguardedNewtonSolver(RootSolver):
     def __init__(
         self,
         f: Callable[[float], float],
-        df: Callable[[float], float],
+        df: Optional[Callable[[float], float]],
         a: float,
         b: float,
         x0: Optional[float] = None,
         tol: float = 1e-10,
         max_iter: int = 100,
+        numerical_derivative: bool = False,
+        df_tol: float = 1e-14,
     ):
         super().__init__(f=f, tol=tol, max_iter=max_iter)
 
         self.df = df
+        self.numerical_derivative = bool(numerical_derivative)
+        self.df_tol = float(df_tol)
+
         self.a = float(a)
         self.b = float(b)
 
@@ -34,6 +40,31 @@ class SafeguardedNewtonSolver(RootSolver):
 
         # Keep initial guess inside the bracket
         self.x0 = min(max(float(x0), self.a), self.b)
+
+    def _safe_eval_df(self, x: float) -> float:
+        try:
+            if self.df is None:
+                return float("nan")
+            val = float(self.df(x))
+            self.n_df += 1
+            if not math.isfinite(val):
+                return float("nan")
+            return val
+        except Exception:
+            return float("nan")
+
+    def _numerical_df(self, x: float) -> tuple[float, float, float, float]:
+        """
+        Central difference derivative with scale-aware step.
+        Returns: (dfx, h, f(x+h), f(x-h))
+        """
+        h = 1e-6 * max(1.0, abs(x))
+        fxph = self._safe_eval(x + h)
+        fxmh = self._safe_eval(x - h)
+        self.n_df += 1
+        if fxph is None or fxmh is None:
+            return (float("nan"), h, float("nan"), float("nan"))
+        return ((fxph - fxmh) / (2.0 * h), h, fxph, fxmh)
 
     def solve(self) -> SolverResult:
         a = self.a
@@ -142,17 +173,38 @@ class SafeguardedNewtonSolver(RootSolver):
                     n_df=self.n_df,
                 )
 
-            # attempt Newton step
-            try:
-                dfx = self.df(x)
-                self.n_df += 1
-            except Exception:
-                dfx = None
+            use_num = self.numerical_derivative or (self.df is None)
+
+            if use_num:
+                dfx, h, fp, fm = self._numerical_df(x)
+                self._event(
+                    "num_deriv",
+                    k=k,
+                    code="NUM_DERIV",
+                    level="info",
+                    x=x,
+                    h=h,
+                    fp=fp,
+                    fm=fm,
+                    dfx=dfx,
+                )
+            else:
+                dfx = self._safe_eval_df(x)
 
             step_type = "newton"
             x_new = None
 
-            if dfx is None or abs(dfx) < 1e-14:
+            if dfx is None or not math.isfinite(dfx):
+                step_type = "bisection"
+                self._event(
+                    "nonfinite",
+                    k=k,
+                    code="NONFINITE",
+                    level="warn",
+                    x=x,
+                    where="df(x)",
+                )
+            elif abs(dfx) < self.df_tol:
                 step_type = "bisection"
                 self._event(
                     "derivative_zero",
@@ -161,6 +213,7 @@ class SafeguardedNewtonSolver(RootSolver):
                     level="warn",
                     x=x,
                     dfx=dfx,
+                    df_tol=self.df_tol,
                 )
             else:
                 candidate = x - fx / dfx
@@ -218,7 +271,6 @@ class SafeguardedNewtonSolver(RootSolver):
                 best_x = x_new
                 best_fx = fx_new
 
-            # record accepted step with actual step type
             self._record(
                 k=k,
                 x=x_new,
@@ -233,7 +285,6 @@ class SafeguardedNewtonSolver(RootSolver):
                 },
             )
 
-            # update bracket
             if fa * fx_new <= 0:
                 b = x_new
                 fb = fx_new

@@ -224,6 +224,7 @@ export default function ExperimentsDashboard() {
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState(null);
+  const [numericalDerivative, setNumericalDerivative] = useState(false);
 
   const [samplingMode, setSamplingMode] = useState("grid");
   const [nSamples, setNSamples] = useState(100);
@@ -362,6 +363,16 @@ export default function ExperimentsDashboard() {
     if (problemMode === "custom" && !String(expr || "").trim()) {
       throw new Error("Custom expression f(x) is required.");
     }
+
+    if (
+      problemMode === "custom" &&
+      !numericalDerivative &&
+      !String(dexpr || "").trim()
+    ) {
+      throw new Error(
+        "Custom derivative f'(x) is required unless numerical derivative is enabled."
+      );
+    }
   }
 
   function buildPayload() {
@@ -376,6 +387,7 @@ export default function ExperimentsDashboard() {
       tol: Number(tol),
       max_iter: Number(maxIter),
       boundary_method: boundaryMethod,
+      numerical_derivative: numericalDerivative,
       scalar_range: {
         x_min: sMin,
         x_max: sMax,
@@ -392,7 +404,7 @@ export default function ExperimentsDashboard() {
         problem_mode: "custom",
         problem_id: null,
         expr: String(expr || "").trim(),
-        dexpr: String(dexpr || "").trim(),
+        dexpr: numericalDerivative ? String(dexpr || "").trim() : String(dexpr || "").trim(),
       };
 
       if (samplingMode === "grid") {
@@ -556,7 +568,6 @@ export default function ExperimentsDashboard() {
   const entropyRows = analytics?.basin_entropy_data?.methods || [];
   const clusterTol = analytics?.basin_entropy_data?.cluster_tol;
 
-
   const paretoMeanUrl = toOutputUrl(analytics?.pareto?.mean_vs_failure);
   const paretoMedianUrl = toOutputUrl(analytics?.pareto?.median_vs_failure);
 
@@ -716,6 +727,12 @@ export default function ExperimentsDashboard() {
       );
     }
 
+    if (numericalDerivative || result?.numerical_derivative) {
+      insights.push(
+        "Derivative-based methods in this sweep used numerical derivative approximation rather than an analytic derivative."
+      );
+    }
+
     return insights;
   }
 
@@ -745,10 +762,15 @@ export default function ExperimentsDashboard() {
       ? result?.n_points ?? nPoints
       : result?.n_samples ?? nSamples;
 
+  const effectiveNumericalDerivative =
+    result?.numerical_derivative ?? numericalDerivative;
+
   const overviewExpr =
     result?.expr || (problemMode === "benchmark" ? benchmarkInfo?.expr : expr) || "-";
-  const overviewDexpr =
-    result?.dexpr || (problemMode === "benchmark" ? benchmarkInfo?.dexpr : dexpr) || "-";
+
+  const overviewDexpr = effectiveNumericalDerivative
+    ? "(numerical derivative)"
+    : result?.dexpr || (problemMode === "benchmark" ? benchmarkInfo?.dexpr : dexpr) || "-";
 
   const overviewRangeMin =
     result?.scalar_range?.[0] ?? result?.scalar_range?.x_min ?? scalarMin;
@@ -773,6 +795,10 @@ export default function ExperimentsDashboard() {
         effectiveSamplingMode === "grid"
           ? "-"
           : result?.random_seed ?? randomSeed,
+    },
+    {
+      label: "Derivative Mode",
+      value: effectiveNumericalDerivative ? "Numerical" : "Analytic",
     },
     { label: "Boundary Method", value: prettyMethod(boundaryMethod) },
     { label: "Methods", value: selectedMethods.map(prettyMethod).join(", ") },
@@ -838,17 +864,67 @@ export default function ExperimentsDashboard() {
                   style={styles.input}
                 />
               </div>
+
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    fontWeight: 600,
+                    color: "#222",
+                    marginBottom: 6,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={numericalDerivative}
+                    onChange={(e) => setNumericalDerivative(e.target.checked)}
+                    disabled={running || isPreparingRun}
+                  />
+                  <span>Use numerical derivative</span>
+                </label>
+              </div>
+
               <div style={{ gridColumn: "1 / -1" }}>
                 <label style={styles.label}>f&apos;(x)</label>
                 <input
                   value={dexpr}
                   onChange={(e) => setDexpr(e.target.value)}
-                  disabled={running || isPreparingRun}
+                  disabled={numericalDerivative || running || isPreparingRun}
+                  placeholder={
+                    numericalDerivative
+                      ? "Using numerical derivative"
+                      : "e.g. 3*x^2 - 1"
+                  }
                   style={styles.input}
                 />
               </div>
             </>
           )}
+
+          {problemMode === "benchmark" ? (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  fontWeight: 600,
+                  color: "#222",
+                  marginBottom: 6,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={numericalDerivative}
+                  onChange={(e) => setNumericalDerivative(e.target.checked)}
+                  disabled={running || isPreparingRun}
+                />
+                <span>Use numerical derivative for derivative-based methods</span>
+              </label>
+            </div>
+          ) : null}
 
           <div>
             <label style={styles.label}>Domain Min</label>
@@ -1020,7 +1096,8 @@ export default function ExperimentsDashboard() {
               <b>f(x)</b> = {benchmarkInfo.expr}
             </div>
             <div style={styles.inlineInfoText}>
-              <b>f&apos;(x)</b> = {benchmarkInfo.dexpr}
+              <b>f&apos;(x)</b> ={" "}
+              {numericalDerivative ? "(numerical derivative)" : benchmarkInfo.dexpr}
             </div>
             <div style={styles.inlineInfoNote}>{benchmarkInfo.note}</div>
           </div>

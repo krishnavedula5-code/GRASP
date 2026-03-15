@@ -468,26 +468,42 @@ def find_sign_change_brackets(
 
 def run_newton(
     f: Callable[[float], float],
-    df: Callable[[float], float],
+    df: Optional[Callable[[float], float]],
     x0: float,
     tol: float,
     max_iter: int,
+    numerical_derivative: bool = False,
 ) -> Any:
-    solver = NewtonSolver(f=f, df=df, x0=x0, tol=tol, max_iter=max_iter)
+    solver = NewtonSolver(
+        f=f,
+        df=df,
+        x0=x0,
+        tol=tol,
+        max_iter=max_iter,
+        numerical_derivative=numerical_derivative,
+    )
     return solver.solve()
 
 
 def run_safeguarded_newton(
     f: Callable[[float], float],
-    df: Callable[[float], float],
+    df: Optional[Callable[[float], float]],
     x0: float,
     a: float,
     b: float,
     tol: float,
     max_iter: int,
+    numerical_derivative: bool = False,
 ) -> Any:
     solver = SafeguardedNewtonSolver(
-        f=f, df=df, x0=x0, a=a, b=b, tol=tol, max_iter=max_iter
+        f=f,
+        df=df,
+        x0=x0,
+        a=a,
+        b=b,
+        tol=tol,
+        max_iter=max_iter,
+        numerical_derivative=numerical_derivative,
     )
     return solver.solve()
 
@@ -527,14 +543,21 @@ def run_brent(
 
 def run_hybrid(
     f: Callable[[float], float],
-    df: Callable[[float], float],
+    df: Optional[Callable[[float], float]],
     a: float,
     b: float,
     tol: float,
     max_iter: int,
+    numerical_derivative: bool = False,
 ) -> Any:
     solver = HybridBisectionNewtonSolver(
-        f=f, df=df, a=a, b=b, tol=tol, max_iter=max_iter
+        f=f,
+        df=df,
+        a=a,
+        b=b,
+        tol=tol,
+        max_iter=max_iter,
+        numerical_derivative=numerical_derivative,
     )
     return solver.solve()
 
@@ -611,6 +634,7 @@ def run_problem_sweeps(
     bracket_initial_points: Optional[Sequence[float]] = None,
     tol: float = 1e-10,
     max_iter: int = 100,
+    numerical_derivative: bool = False,
 ) -> List[SweepRunRecord]:
     methods_to_run = normalize_methods(methods)
     if not methods_to_run:
@@ -639,9 +663,27 @@ def run_problem_sweeps(
         bracket_initial_points = [float(x) for x in bracket_initial_points]
 
     f = compile_expr(problem.expr)
-    df = compile_expr(problem.dexpr) if problem.dexpr else None
+    df = None if numerical_derivative else (compile_expr(problem.dexpr) if problem.dexpr else None)
     discovered_clusters: Optional[List[RootCluster]] = None
 
+    root_discovery_n = max(len(scalar_initial_points), 2)
+
+    if (
+        not numerical_derivative
+        and problem.dexpr is not None
+        and any(m in methods_to_run for m in ("newton", "hybrid", "safeguarded_newton"))
+    ):
+        discovered_clusters = discover_roots(
+            expr=problem.expr,
+            dexpr=problem.dexpr,
+            xmin=problem.scalar_range[0],
+            xmax=problem.scalar_range[1],
+            n=root_discovery_n,
+            tol=tol,
+            max_iter=max_iter,
+            cluster_tol=1e-4,
+            residual_tol=1e-8,
+        )
     root_discovery_n = max(len(scalar_initial_points), 2)
 
     if problem.dexpr is not None and any(
@@ -663,31 +705,37 @@ def run_problem_sweeps(
 
     if "newton" in methods_to_run:
         for i, x0 in enumerate(scalar_initial_points):
-            if df is not None:
-                try:
-                    res = run_newton(f, df, x0=x0, tol=tol, max_iter=max_iter)
-                    records.append(
-                        result_to_record(
-                            problem,
-                            "newton",
-                            i,
-                            res,
-                            x0=x0,
-                            clusters=discovered_clusters,
-                        )
+            try:
+                res = run_newton(
+                    f,
+                    df,
+                    x0=x0,
+                    tol=tol,
+                    max_iter=max_iter,
+                    numerical_derivative=numerical_derivative,
+                )
+                records.append(
+                    result_to_record(
+                        problem,
+                        "newton",
+                        i,
+                        res,
+                        x0=x0,
+                        clusters=discovered_clusters,
                     )
-                except Exception as exc:
-                    records.append(
-                        result_to_record(
-                            problem,
-                            "newton",
-                            i,
-                            None,
-                            x0=x0,
-                            error_message=str(exc),
-                            clusters=discovered_clusters,
-                        )
+                )
+            except Exception as exc:
+                records.append(
+                    result_to_record(
+                        problem,
+                        "newton",
+                        i,
+                        None,
+                        x0=x0,
+                        error_message=str(exc),
+                        clusters=discovered_clusters,
                     )
+                )
 
     if "secant" in methods_to_run:
         if len(secant_initial_points) < 2:
@@ -797,71 +845,84 @@ def run_problem_sweeps(
                         )
                     )
 
-            if df is not None:
-                x0_mid = 0.5 * (a + b)
+            x0_mid = 0.5 * (a + b)
 
-                if "hybrid" in methods_to_run:
-                    try:
-                        res = run_hybrid(f, df, a=a, b=b, tol=tol, max_iter=max_iter)
-                        records.append(
-                            result_to_record(
-                                problem,
-                                "hybrid",
-                                i,
-                                res,
-                                x0=x0_mid,
-                                a=a,
-                                b=b,
-                                clusters=discovered_clusters,
-                            )
+            if "hybrid" in methods_to_run:
+                try:
+                    res = run_hybrid(
+                        f,
+                        df,
+                        a=a,
+                        b=b,
+                        tol=tol,
+                        max_iter=max_iter,
+                        numerical_derivative=numerical_derivative,
+                    )
+                    records.append(
+                        result_to_record(
+                            problem,
+                            "hybrid",
+                            i,
+                            res,
+                            x0=x0_mid,
+                            a=a,
+                            b=b,
+                            clusters=discovered_clusters,
                         )
-                    except Exception as exc:
-                        records.append(
-                            result_to_record(
-                                problem,
-                                "hybrid",
-                                i,
-                                None,
-                                x0=x0_mid,
-                                a=a,
-                                b=b,
-                                error_message=str(exc),
-                                clusters=discovered_clusters,
-                            )
+                    )
+                except Exception as exc:
+                    records.append(
+                        result_to_record(
+                            problem,
+                            "hybrid",
+                            i,
+                            None,
+                            x0=x0_mid,
+                            a=a,
+                            b=b,
+                            error_message=str(exc),
+                            clusters=discovered_clusters,
                         )
+                    )
 
-                if "safeguarded_newton" in methods_to_run:
-                    try:
-                        res = run_safeguarded_newton(
-                            f, df, x0=x0_mid, a=a, b=b, tol=tol, max_iter=max_iter
+            if "safeguarded_newton" in methods_to_run:
+                try:
+                    res = run_safeguarded_newton(
+                        f,
+                        df,
+                        x0=x0_mid,
+                        a=a,
+                        b=b,
+                        tol=tol,
+                        max_iter=max_iter,
+                        numerical_derivative=numerical_derivative,
+                    )
+                    records.append(
+                        result_to_record(
+                            problem,
+                            "safeguarded_newton",
+                            i,
+                            res,
+                            x0=x0_mid,
+                            a=a,
+                            b=b,
+                            clusters=discovered_clusters,
                         )
-                        records.append(
-                            result_to_record(
-                                problem,
-                                "safeguarded_newton",
-                                i,
-                                res,
-                                x0=x0_mid,
-                                a=a,
-                                b=b,
-                                clusters=discovered_clusters,
-                            )
+                    )
+                except Exception as exc:
+                    records.append(
+                        result_to_record(
+                            problem,
+                            "safeguarded_newton",
+                            i,
+                            None,
+                            x0=x0_mid,
+                            a=a,
+                            b=b,
+                            error_message=str(exc),
+                            clusters=discovered_clusters,
                         )
-                    except Exception as exc:
-                        records.append(
-                            result_to_record(
-                                problem,
-                                "safeguarded_newton",
-                                i,
-                                None,
-                                x0=x0_mid,
-                                a=a,
-                                b=b,
-                                error_message=str(exc),
-                                clusters=discovered_clusters,
-                            )
-                        )
-
+                    )
     return records
 
 
@@ -1062,6 +1123,7 @@ def run_single_sweep_experiment(
     n_points: int = 100,
     tol: float = 1e-10,
     max_iter: int = 100,
+    numerical_derivative: bool = False,
     output_dir: str | Path = "outputs/sweeps",
 ) -> Dict[str, Any]:
     mode = str(problem_mode or "benchmark").strip().lower()
@@ -1094,6 +1156,7 @@ def run_single_sweep_experiment(
         bracket_points=int(n_points),
         tol=float(tol),
         max_iter=int(max_iter),
+        numerical_derivative=bool(numerical_derivative),
     )
 
     records_csv_path = sweep_path / "records.csv"
@@ -1125,6 +1188,7 @@ def run_single_sweep_experiment(
         "problem_id": problem.problem_id,
         "expr": problem.expr,
         "dexpr": problem.dexpr,
+        "numerical_derivative": bool(numerical_derivative),
         "scalar_range": list(problem.scalar_range),
         "secant_range": list(problem.secant_range),
         "bracket_search_range": list(problem.bracket_search_range),

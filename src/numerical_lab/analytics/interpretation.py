@@ -267,20 +267,31 @@ def build_interpretation_summary(
     expectations: Dict[str, Any],
     analytics: Dict[str, Any],
     failure_analysis: Dict[str, Any],
+    metadata: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+
+    numerical_derivative = False
+    if metadata:
+        numerical_derivative = bool(metadata.get("numerical_derivative", False))
+
+    derivative_mode = "numerical" if numerical_derivative else "analytic"
+
     root_cov = _root_coverage_interpretation(
         expectations=expectations,
         analytics=analytics,
         failure_analysis=failure_analysis,
     )
+
     failure_interp = _failure_interpretation(
         expectations=expectations,
         failure_analysis=failure_analysis,
     )
+
     basin_interp = _basin_statistics_interpretation(
         expectations=expectations,
         analytics=analytics,
     )
+
     comparison = _comparison_summary(
         expectations=expectations,
         analytics=analytics,
@@ -289,6 +300,16 @@ def build_interpretation_summary(
     )
 
     top_summary: List[str] = []
+
+    # --- Derivative mode explanation ---
+    if numerical_derivative:
+        top_summary.append(
+            "Derivative-based methods (Newton-family solvers) used numerical derivative approximation rather than analytic derivatives."
+        )
+    else:
+        top_summary.append(
+            "Derivative-based methods used analytic derivatives supplied by the problem definition."
+        )
 
     expected_roots = _safe_get(expectations, "analytic_checks", "root_candidate_count", default=0)
     sign_change_roots = _safe_get(expectations, "analytic_checks", "sign_change_interval_count", default=0)
@@ -304,6 +325,7 @@ def build_interpretation_summary(
     top_summary.extend((comparison.get("notes") or [])[:3])
 
     return {
+        "derivative_mode": derivative_mode,
         "top_summary": top_summary,
         "root_coverage_interpretation": root_cov,
         "failure_interpretation": failure_interp,

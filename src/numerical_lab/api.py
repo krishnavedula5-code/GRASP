@@ -88,6 +88,7 @@ class SweepExperimentRequest(BaseModel):
 
     expr: Optional[str] = None
     dexpr: Optional[str] = None
+    numerical_derivative: bool = False
 
     methods: List[str] = Field(
         default_factory=lambda: [
@@ -180,8 +181,14 @@ class SweepExperimentRequest(BaseModel):
                 self.problem_id = "p4"
             return self
 
-        if not self.expr:
+        if not self.expr or str(self.expr).strip() == "":
             raise ValueError("expr required for custom mode")
+
+        if not self.numerical_derivative:
+            if self.dexpr is None or str(self.dexpr).strip() == "":
+                raise ValueError(
+                    "dexpr required for custom mode unless numerical_derivative=true"
+                )
 
         if self.scalar_range is None:
             if self.x_min is None or self.x_max is None:
@@ -191,7 +198,7 @@ class SweepExperimentRequest(BaseModel):
                 raise ValueError("x_min must be < x_max")
 
         return self
-
+    
 # ---------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------
