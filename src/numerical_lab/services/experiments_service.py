@@ -5,6 +5,7 @@ import json
 import math
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
 from dataclasses import asdict
@@ -13,6 +14,8 @@ from numerical_lab.diagnostics.adaptive_boundaries import run_adaptive_boundary_
 from numerical_lab.engine.controller import NumericalEngine
 
 from numerical_lab.services.sampling import generate_initial_points
+from numerical_lab.services.experiment_jobs import create_job, update_job
+from numerical_lab.experiments.monte_carlo import run_monte_carlo_experiment
 from numerical_lab.analytics.sweep_analytics import generate_sweep_analytics
 from numerical_lab.analytics.interpretation import (
     build_interpretation_summary,
@@ -22,6 +25,7 @@ from numerical_lab.analytics.failure_analysis import generate_failure_statistics
 from numerical_lab.analytics.problem_expectations import build_problem_expectations
 from numerical_lab.services.experiment_jobs import update_job
 from numerical_lab.experiments import sweep as sweep_module
+from numerical_lab.experiments.monte_carlo import run_monte_carlo_experiment
 from numerical_lab.experiments import detect_basin_boundaries as boundary_module
 from numerical_lab.diagnostics.boundaries import save_boundary_artifacts
 
@@ -48,6 +52,99 @@ def _parse_range(
         return float(x_min), float(x_max)
 
     raise ValueError("Range must be either a 2-element list/tuple or a dict with x_min/x_max")
+
+def start_monte_carlo_job(
+    *,
+    problem_id: str,
+    f,
+    df,
+    methods,
+    x_min: float,
+    x_max: float,
+    n_samples: int,
+    random_seed: int = 42,
+    distribution: str = "uniform",
+    gaussian_mean: float | None = None,
+    gaussian_std: float | None = None,
+    secant_dx: float = 1e-2,
+    max_iter: int = 100,
+    tol: float = 1e-10,
+    numerical_derivative: bool = False,
+) -> str:
+    """
+    Launch Monte Carlo reliability experiment in a background job.
+    """
+    job = create_job(job_type="monte_carlo", message="Monte Carlo job created")
+    job_id = job.job_id
+
+    def _runner():
+        try:
+            update_job(job_id, status="running", progress=0.05, message="Starting Monte Carlo experiment")
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            outdir = Path("outputs/monte_carlo") / f"mc_{ts}"
+
+            update_job(job_id, status="running", progress=0.15, message="Running Monte Carlo sampling")
+
+            result = run_monte_carlo_experiment(
+                problem_id=problem_id,
+                f=f,
+                df=df,
+                methods=list(methods),
+                x_min=x_min,
+                x_max=x_max,
+                n_samples=n_samples,
+                output_dir=outdir,
+                random_seed=random_seed,
+                distribution=distribution,
+                gaussian_mean=gaussian_mean,
+                gaussian_std=gaussian_std,
+                secant_dx=secant_dx,
+                max_iter=max_iter,
+                tol=tol,
+                numerical_derivative=numerical_derivative,
+            )
+
+            update_job(
+                job_id,
+                status="completed",
+                progress=1.0,
+                message="Monte Carlo experiment completed",
+                result={
+                    "latest_monte_carlo_dir": result["output_dir"],
+                    "records_csv": result["records_csv"],
+                    "summary_json": result["summary_json"],
+                    "metadata_json": result["metadata_json"],
+                    "interpretation_json": result["interpretation_json"],
+                    "interpretation_txt": result["interpretation_txt"],
+                    "problem_id": problem_id,
+                    "methods": list(methods),
+                    "x_min": x_min,
+                    "x_max": x_max,
+                    "n_samples": n_samples,
+                    "random_seed": random_seed,
+                    "distribution": distribution,
+                    "gaussian_mean": gaussian_mean,
+                    "gaussian_std": gaussian_std,
+                    "secant_dx": secant_dx,
+                    "tol": tol,
+                    "max_iter": max_iter,
+                    "numerical_derivative": numerical_derivative,
+                    "summary": result["summary"],
+                },
+            )
+        except Exception as exc:
+            update_job(
+                job_id,
+                status="failed",
+                progress=1.0,
+                message=f"Monte Carlo experiment failed: {exc}",
+                result={"error": str(exc)},
+            )
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    return job_id
 
 
 def _build_custom_problem(payload: Dict[str, Any]):

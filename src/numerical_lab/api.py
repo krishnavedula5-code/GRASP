@@ -13,12 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from pydantic import BaseModel, Field, model_validator
-
+from numerical_lab.services.experiments_service import start_monte_carlo_job
+from numerical_lab.benchmarks.catalog import get_benchmark
 from numerical_lab.engine.controller import NumericalEngine
 from numerical_lab.engine.summary import build_comparison_summary
 from numerical_lab.diagnostics.explain import explain_run
 from numerical_lab.benchmarks.catalog import list_benchmarks, get_benchmark
-
+from numerical_lab.expr.safe_eval import compile_expr
 from numerical_lab.services.experiment_jobs import (
     create_job,
     get_job,
@@ -80,6 +81,41 @@ class RangeSpec(BaseModel):
     x_min: float
     x_max: float
     n_points: Optional[int] = None
+
+class MonteCarloRequest(BaseModel):
+    problem_id: str | None = None
+    methods: list[str] = Field(default_factory=lambda: ["newton", "secant", "bisection", "hybrid", "safeguarded_newton", "brent"])
+    x_min: float
+    x_max: float
+    n_samples: int = Field(default=1000, ge=1, le=200000)
+    random_seed: int = 42
+
+    distribution: str = "uniform"   # uniform | gaussian
+    gaussian_mean: float | None = None
+    gaussian_std: float | None = None
+
+    secant_dx: float = 1e-2
+    tol: float = 1e-10
+    max_iter: int = 100
+    numerical_derivative: bool = False
+
+    @model_validator(mode="after")
+    def validate_inputs(self):
+        if self.x_min >= self.x_max:
+            raise ValueError("x_min must be strictly less than x_max")
+
+        allowed = {"newton", "secant", "bisection", "hybrid", "safeguarded_newton", "brent"}
+        bad = [m for m in self.methods if m not in allowed]
+        if bad:
+            raise ValueError(f"Unsupported methods: {bad}")
+
+        if self.distribution not in {"uniform", "gaussian"}:
+            raise ValueError("distribution must be 'uniform' or 'gaussian'")
+
+        if self.distribution == "gaussian" and self.gaussian_std is not None and self.gaussian_std <= 0:
+            raise ValueError("gaussian_std must be positive")
+
+        return self
 
 
 class SweepExperimentRequest(BaseModel):
@@ -324,9 +360,7 @@ app.add_middleware(
 # Health
 # ---------------------------------------------------------
 
-@app.get("/health")
-def health():
-    return {"ok": True, "app_version": APP_VERSION}
+
 
 @app.get("/health")
 def health():
@@ -364,6 +398,76 @@ def create_sweep_experiment(req: SweepExperimentRequest):
         "message": job.message,
     }
 
+@app.post("/experiments/monte-carlo")
+def run_monte_carlo_experiment_api(payload: MonteCarloRequest):
+    if not payload.problem_id:
+        raise HTTPException(
+            status_code=400,
+            detail="problem_id is required for Monte Carlo experiments",
+        )
+
+    problem_id = str(payload.problem_id).strip().upper()
+    benchmark = get_benchmark(problem_id)
+
+    if benchmark is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown benchmark: {problem_id}",
+        )
+
+    from numerical_lab.expr.safe_eval import compile_expr
+
+    expr = benchmark.get("expr")
+    dexpr = benchmark.get("dexpr")
+
+    if not expr:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Benchmark {problem_id} does not define 'expr'",
+        )
+
+    f = compile_expr(expr)
+
+    df = None
+    if dexpr and str(dexpr).strip():
+        df = compile_expr(dexpr)
+
+    derivative_methods = {"newton", "hybrid", "safeguarded_newton"}
+    needs_df = any(m in derivative_methods for m in payload.methods)
+
+    if needs_df and df is None and not payload.numerical_derivative:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Selected methods require a derivative, but this benchmark has "
+                "no analytic derivative and numerical_derivative is False"
+            ),
+        )
+
+    job_id = start_monte_carlo_job(
+        problem_id=problem_id,   # normalized value
+        f=f,
+        df=df,
+        methods=payload.methods,
+        x_min=payload.x_min,
+        x_max=payload.x_max,
+        n_samples=payload.n_samples,
+        random_seed=payload.random_seed,
+        distribution=payload.distribution,
+        gaussian_mean=payload.gaussian_mean,
+        gaussian_std=payload.gaussian_std,
+        secant_dx=payload.secant_dx,
+        max_iter=payload.max_iter,
+        tol=payload.tol,
+        numerical_derivative=payload.numerical_derivative,
+    )
+
+    return {
+        "job_id": job_id,
+        "job_type": "monte_carlo",
+        "status": "queued",
+        "message": "Monte Carlo experiment started",
+    }
 
 @app.get("/experiments/jobs")
 def get_experiment_jobs():

@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, List
-
+from datetime import datetime, timezone 
 
 # -------------------------------------------------------
 # Job model
@@ -96,17 +96,31 @@ def list_jobs() -> List[ExperimentJob]:
 # Job updates
 # -------------------------------------------------------
 
+
 def update_job(job_id: str, **kwargs) -> Optional[ExperimentJob]:
     with _LOCK:
         job = _JOBS.get(job_id)
         if not job:
             return None
 
+        # Detect status transitions for timestamps
+        new_status = kwargs.get("status")
+
+        if new_status is not None:
+            # Set started_at when job first enters running state
+            if new_status == "running" and getattr(job, "started_at", None) is None:
+                job.started_at = datetime.now(timezone.utc).timestamp()
+
+            # Set finished_at when job completes or fails
+            if new_status in {"completed", "failed"}:
+                job.finished_at = datetime.now(timezone.utc).timestamp()
+
+        # Apply updates
         for k, v in kwargs.items():
             setattr(job, k, v)
 
         return job
-
+    
 
 # -------------------------------------------------------
 # Status helpers
