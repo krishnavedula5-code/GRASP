@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
 from dataclasses import asdict
+from types import SimpleNamespace
+from numerical_lab.benchmarks.registry import get as get_registered_benchmark
 
 from numerical_lab.diagnostics.adaptive_boundaries import run_adaptive_boundary_refinement
 from numerical_lab.engine.controller import NumericalEngine
@@ -313,6 +315,31 @@ def _run_adaptive_refinement_safe(
 
     return adaptive_boundary_artifacts
 
+def _build_problem_from_benchmark(benchmark_id: str):
+    bench = get_registered_benchmark(str(benchmark_id).strip())
+
+    # fallback dummy expressions to satisfy existing pipeline
+    expr = "0"
+    dexpr = "0"
+
+    return SimpleNamespace(
+        problem_id=bench.problem_id,
+        name=bench.name,
+        category=bench.category,
+        function=bench.function,
+        derivative=bench.derivative,
+
+        # 🔴 critical fix
+        expr=expr,
+        dexpr=dexpr,
+
+        analytic_notes=bench.analytic_notes,
+        known_roots=bench.known_roots,
+        scalar_range=tuple(bench.domain),
+        secant_range=tuple(bench.domain),
+        bracket_search_range=tuple(bench.domain),
+    )
+
 
 def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
     try:
@@ -347,11 +374,23 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
         if gaussian_std is not None:
             gaussian_std = float(gaussian_std)
 
+        benchmark_id = None
+        benchmark_name = None
+        benchmark_category = None
+        problem_type = "custom"
+
         if problem_mode == "custom":
             problem = _build_custom_problem(payload)
+        elif problem_mode == "benchmark":
+            benchmark_id = str(payload.get("benchmark_id") or "poly_01").strip()
+            bench = get_registered_benchmark(benchmark_id)
+
+            problem = _build_problem_from_benchmark(benchmark_id)
+            benchmark_name = bench.name
+            benchmark_category = bench.category
+            problem_type = "benchmark"
         else:
-            problem_id = payload.get("problem_id") or "p4"
-            problem = _find_problem(problem_id)
+            raise ValueError("problem_mode must be 'benchmark' or 'custom'")
 
         if sampling_mode not in {"grid", "uniform", "gaussian"}:
             raise ValueError("sampling_mode must be one of: grid, uniform, gaussian")
@@ -412,7 +451,6 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             message="Sweep finished, saving outputs",
         )
 
-        
         sweep_path = _create_job_output_folder()
 
         records_csv_path = sweep_path / "records.csv"
@@ -444,24 +482,52 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             methods_to_use = methods_present
 
         effective_count = n_points if sampling_mode == "grid" else n_samples
-        cluster_tol = _compute_cluster_tol(
+
+        base_cluster_tol = _compute_cluster_tol(
             problem,
             n_points=effective_count,
             tol=tol,
             sampling_mode=sampling_mode,
         )
 
+        # Temporary stronger clustering floor for benchmark interpretation validation.
+        # This avoids treating each nearby converged point as a separate root cluster.
+        try:
+            a, b = problem.scalar_range
+            domain_width = abs(float(b) - float(a))
+        except Exception:
+            domain_width = 1.0
+
+        cluster_tol = max(
+            base_cluster_tol,
+            0.1,  # temporary debug floor
+            0.02 * domain_width,
+        )
+
+        print("[debug] base_cluster_tol:", base_cluster_tol)
+        print("[debug] final cluster_tol:", cluster_tol)
+
         problem_expectations = {}
         problem_expectations_path = analytics_dir / "problem_expectations.json"
         try:
-            problem_expectations = build_problem_expectations(
-                expr=problem.expr,
-                dexpr=problem.dexpr,
-                scalar_range=problem.scalar_range,
-                bracket_search_range=problem.bracket_search_range,
-                methods=methods_to_use,
-                sample_points=max(801, effective_count if effective_count > 0 else 801),
-            )
+            if getattr(problem, "expr", None):
+                problem_expectations = build_problem_expectations(
+                    expr=problem.expr,
+                    dexpr=problem.dexpr,
+                    scalar_range=problem.scalar_range,
+                    bracket_search_range=problem.bracket_search_range,
+                    methods=methods_to_use,
+                    sample_points=max(801, effective_count if effective_count > 0 else 801),
+                )
+            else:
+                problem_expectations = {
+                    "problem_id": problem.problem_id,
+                    "problem_type": problem_type,
+                    "analytic_notes": getattr(problem, "analytic_notes", None),
+                    "known_roots": getattr(problem, "known_roots", None),
+                    "message": "Analytic expectations sourced from benchmark metadata because symbolic expr/dexpr are not available.",
+                }
+
             with open(problem_expectations_path, "w", encoding="utf-8") as fexp:
                 json.dump(problem_expectations, fexp, indent=2)
             print("[debug] problem expectations saved:", problem_expectations_path)
@@ -492,57 +558,18 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             print(f"[warn] failure statistics generation failed: {e}")
             failure_analysis = {}
 
-        interpretation_summary = {}
-        interpretation_saved_paths = {}
-        try:
-            print("[debug] building interpretation summary...")
-            print(
-                "[debug] problem_expectations keys:",
-                list(problem_expectations.keys()) if isinstance(problem_expectations, dict) else type(problem_expectations),
-            )
-            print(
-                "[debug] failure_analysis keys:",
-                list(failure_analysis.keys()) if isinstance(failure_analysis, dict) else type(failure_analysis),
-            )
-
-            interpretation_summary = build_interpretation_summary(
-                expectations=problem_expectations,
-                analytics=analytics,
-                failure_analysis=failure_analysis,
-                metadata=metadata,
-            )
-
-
-            print(
-                "[debug] interpretation_summary keys:",
-                list(interpretation_summary.keys()) if isinstance(interpretation_summary, dict) else type(interpretation_summary),
-            )
-
-            interpretation_saved_paths = save_interpretation_summary(
-                output_dir=analytics_dir,
-                interpretation=interpretation_summary,
-            )
-            print("[debug] interpretation files saved:", interpretation_saved_paths)
-        except Exception as e:
-            print(f"[warn] interpretation summary generation failed: {e}")
-            interpretation_summary = {}
-            interpretation_saved_paths = {}
-
-        adaptive_boundary_artifacts = _run_adaptive_refinement_safe(
-            records=records,
-            methods=methods_requested,
-            problem=problem,
-            sweep_path=sweep_path,
-            numerical_derivative=numerical_derivative,
-        )
-
-
         metadata = {
             "experiment_type": "sweep",
             "problem_mode": problem_mode,
+            "problem_type": problem_type,
             "problem_id": problem.problem_id,
+            "benchmark_id": benchmark_id,
+            "benchmark_name": benchmark_name,
+            "benchmark_category": benchmark_category,
             "expr": problem.expr,
             "dexpr": problem.dexpr,
+            "analytic_notes": getattr(problem, "analytic_notes", None),
+            "known_roots": getattr(problem, "known_roots", None),
             "numerical_derivative": numerical_derivative,
             "scalar_range": list(problem.scalar_range),
             "secant_range": list(problem.secant_range),
@@ -570,8 +597,52 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
                 "boundary_dir": f"boundaries/{boundary_method}",
             },
         }
+
         with open(metadata_json_path, "w", encoding="utf-8") as fmeta:
             json.dump(metadata, fmeta, indent=2)
+
+        interpretation_summary = {}
+        interpretation_saved_paths = {}
+        try:
+            print("[debug] building interpretation summary...")
+            print(
+                "[debug] problem_expectations keys:",
+                list(problem_expectations.keys()) if isinstance(problem_expectations, dict) else type(problem_expectations),
+            )
+            print(
+                "[debug] failure_analysis keys:",
+                list(failure_analysis.keys()) if isinstance(failure_analysis, dict) else type(failure_analysis),
+            )
+
+            interpretation_summary = build_interpretation_summary(
+                expectations=problem_expectations,
+                analytics=analytics,
+                failure_analysis=failure_analysis,
+                metadata=metadata,
+            )
+
+            print(
+                "[debug] interpretation_summary keys:",
+                list(interpretation_summary.keys()) if isinstance(interpretation_summary, dict) else type(interpretation_summary),
+            )
+
+            interpretation_saved_paths = save_interpretation_summary(
+                output_dir=analytics_dir,
+                interpretation=interpretation_summary,
+            )
+            print("[debug] interpretation files saved:", interpretation_saved_paths)
+        except Exception as e:
+            print(f"[warn] interpretation summary generation failed: {e}")
+            interpretation_summary = {}
+            interpretation_saved_paths = {}
+
+        adaptive_boundary_artifacts = _run_adaptive_refinement_safe(
+            records=records,
+            methods=methods_requested,
+            problem=problem,
+            sweep_path=sweep_path,
+            numerical_derivative=numerical_derivative,
+        )
 
         update_job(
             job_id,
@@ -698,7 +769,11 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             "boundaries_root": f"/outputs/sweeps/{sweep_path.name}/boundaries",
             "boundary_dir": boundaries_base_url,
             "problem_mode": problem_mode,
+            "problem_type": problem_type,
             "problem_id": problem.problem_id,
+            "benchmark_id": benchmark_id,
+            "benchmark_name": benchmark_name,
+            "benchmark_category": benchmark_category,
             "numerical_derivative": numerical_derivative,
             "sampling_mode": sampling_mode,
             "n_samples": n_samples,
@@ -864,7 +939,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             message="Experiment failed",
         )
 
-
+        
 def start_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
     t = threading.Thread(target=run_sweep_job, args=(job_id, payload), daemon=True)
     t.start()

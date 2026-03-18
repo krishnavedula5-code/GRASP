@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from numerical_lab.analytics.interpretation_confidence import (
+    build_method_interpretation_confidence,
+)
+
 
 BRACKET_METHODS = {"bisection", "brent", "hybrid", "safeguarded_newton"}
 OPEN_METHODS = {"newton", "secant"}
@@ -16,6 +20,11 @@ def _safe_get(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
             return default
         cur = cur[key]
     return cur
+
+
+def _get_newton_pathology(expectations: Dict[str, Any]) -> Dict[str, Any]:
+    data = _safe_get(expectations, "analytic_checks", "newton_pathology", default={})
+    return data if isinstance(data, dict) else {}
 
 
 def _classify_match(expected: str, observed: str, status: str) -> Dict[str, str]:
@@ -34,8 +43,16 @@ def _root_coverage_interpretation(
     expected_root_count = _safe_get(
         expectations, "analytic_checks", "root_candidate_count", default=0
     )
+
     sign_change_count = _safe_get(
         expectations, "analytic_checks", "sign_change_interval_count", default=0
+    )
+
+    raw_sign_change_count = _safe_get(
+        expectations,
+        "analytic_checks",
+        "raw_sign_change_interval_count",
+        default=sign_change_count,
     )
 
     root_coverage_data = analytics.get("root_coverage_data") or {}
@@ -46,7 +63,6 @@ def _root_coverage_interpretation(
 
     for method, info in methods_summary.items():
         discovered = int(info.get("roots_found", 0))
-        total_roots = int(info.get("total_roots", expected_root_count or 0))
         coverage_ratio = info.get("coverage", None)
 
         if method in OPEN_METHODS:
@@ -75,7 +91,8 @@ def _root_coverage_interpretation(
                 if discovered <= sign_change_count:
                     per_method[method] = _classify_match(
                         expected=(
-                            f"Bracket method was expected to access at most about {sign_change_count} sign-change-accessible root region(s), "
+                            f"Bracket method was expected to access at most about {sign_change_count} sign-change-accessible root region(s) "
+                            f"(raw sampled detection found {raw_sign_change_count}), "
                             f"with possible undercoverage relative to {expected_root_count} total root candidates."
                         ),
                         observed=f"{method} discovered {discovered} root(s), coverage={coverage_ratio}.",
@@ -84,14 +101,18 @@ def _root_coverage_interpretation(
                 else:
                     per_method[method] = _classify_match(
                         expected=(
-                            f"Bracket method was expected to be limited by {sign_change_count} sign-change interval(s)."
+                            f"Bracket method was expected to be limited by {sign_change_count} sign-change interval(s) "
+                            f"(raw sampled detection found {raw_sign_change_count})."
                         ),
                         observed=f"{method} discovered {discovered} root(s), exceeding the expected sign-change-limited count.",
                         status="unexpected",
                     )
             else:
                 per_method[method] = _classify_match(
-                    expected=f"Bracket method had about {sign_change_count} sign-change interval(s) available.",
+                    expected=(
+                        f"Bracket method had about {sign_change_count} sign-change interval(s) available "
+                        f"(raw sampled detection found {raw_sign_change_count})."
+                    ),
                     observed=f"{method} discovered {discovered} root(s), coverage={coverage_ratio}.",
                     status="matched" if discovered <= max(sign_change_count, 1) else "unexpected",
                 )
@@ -116,6 +137,7 @@ def _root_coverage_interpretation(
         comparison_notes.append(
             f"Open methods {', '.join(sorted(open_successes))} behaved consistently with the analytic expectation that they can access more than just sign-change-isolated roots."
         )
+
     if bracket_successes and expected_root_count > sign_change_count:
         comparison_notes.append(
             f"Bracket-family methods {', '.join(sorted(bracket_successes))} behaved consistently with the structural sign-change limitation inferred from the problem definition."
@@ -124,6 +146,7 @@ def _root_coverage_interpretation(
     return {
         "expected_root_candidate_count": expected_root_count,
         "expected_sign_change_interval_count": sign_change_count,
+        "raw_sign_change_interval_count": raw_sign_change_count,
         "per_method": per_method,
         "comparison_notes": comparison_notes,
     }
@@ -221,6 +244,112 @@ def _basin_statistics_interpretation(
     }
 
 
+def _newton_pathology_interpretation(
+    expectations: Dict[str, Any],
+    failure_analysis: Dict[str, Any],
+) -> Dict[str, Any]:
+    pathology = _get_newton_pathology(expectations)
+
+    if not pathology:
+        return {
+            "status": "unavailable",
+            "message": "No analytic Newton pathology summary was available.",
+            "details": {},
+            "comparison_to_observed": [],
+            "confidence": {},
+        }
+
+    derivative_degeneracy = pathology.get("derivative_degeneracy") or {}
+    step_risk = pathology.get("step_risk") or {}
+    critical_density = pathology.get("critical_point_density") or {}
+    instability_regions = pathology.get("instability_regions") or {}
+
+    risk_score = pathology.get("expected_newton_risk_score")
+    risk_band = pathology.get("expected_newton_risk_band", "unknown")
+
+    deg_frac = float(derivative_degeneracy.get("degenerate_fraction", 0.0))
+    high_step_frac = float(step_risk.get("high_step_fraction", 0.0))
+    instability_frac = float(instability_regions.get("instability_fraction", 0.0))
+    critical_count = int(critical_density.get("critical_point_count_estimate", 0))
+
+    methods = failure_analysis.get("methods") or {}
+    newton_failure_info = methods.get("newton") or {}
+    total_runs = int(newton_failure_info.get("total_runs", 0))
+    failed_runs = int(newton_failure_info.get("failed_runs", 0))
+    failure_rate = (
+        float(newton_failure_info.get("failure_rate", 0.0))
+        if total_runs > 0
+        else 0.0
+    )
+    success_fraction = 0.0
+    if total_runs > 0:
+        success_fraction = max(0.0, min(1.0, (total_runs - failed_runs) / total_runs))
+
+    unknown_fraction = 0.0
+    failure_counts = newton_failure_info.get("failure_counts", {}) or {}
+    if total_runs > 0 and isinstance(failure_counts, dict):
+        unknown_count = int(failure_counts.get("unknown", 0))
+        unknown_fraction = max(0.0, min(1.0, unknown_count / total_runs))
+
+    comparison_to_observed: List[str] = []
+
+    if total_runs > 0:
+        if risk_band == "high" and failure_rate > 0:
+            comparison_to_observed.append(
+                "Observed Newton failures are consistent with the analytically predicted high-risk structure."
+            )
+        elif risk_band == "high" and failure_rate == 0:
+            comparison_to_observed.append(
+                "Analytic Newton risk was high, but no explicit Newton failures were observed on the sampled runs."
+            )
+        elif risk_band == "low" and failure_rate == 0:
+            comparison_to_observed.append(
+                "Observed Newton behavior is consistent with the analytically predicted low-risk structure."
+            )
+        elif risk_band == "low" and failure_rate > 0:
+            comparison_to_observed.append(
+                "Observed Newton failures were stronger than expected from the analytic low-risk prediction."
+            )
+        else:
+            comparison_to_observed.append(
+                "Observed Newton behavior shows partial agreement with the analytic pathology estimate."
+            )
+
+    confidence: Dict[str, Any] = {}
+    if total_runs > 0:
+        confidence = build_method_interpretation_confidence(
+            predicted_risk_band=risk_band,
+            observed_failure_fraction=failure_rate,
+            observed_success_fraction=success_fraction,
+            sample_count=total_runs,
+            unknown_fraction=unknown_fraction,
+        )
+
+        confidence_band = confidence.get("confidence_band", "unknown")
+        agreement_label = confidence.get("agreement_label", "unknown")
+        mismatch = confidence.get("mismatch_severity")
+
+        comparison_to_observed.append(
+            f"Confidence in the Newton interpretation is {confidence_band}, with {agreement_label} analytic-observed agreement"
+            + (f" (mismatch={mismatch:.4f})." if isinstance(mismatch, (int, float)) else ".")
+        )
+
+    message = (
+        f"Analytic Newton scan classified the domain as {risk_band} risk "
+        f"(score={risk_score}) with derivative degeneracy fraction={deg_frac:.4f}, "
+        f"high-step fraction={high_step_frac:.4f}, instability fraction={instability_frac:.4f}, "
+        f"and estimated critical-point count={critical_count}."
+    )
+
+    return {
+        "status": "interpreted",
+        "message": message,
+        "details": pathology,
+        "comparison_to_observed": comparison_to_observed,
+        "confidence": confidence,
+    }
+
+
 def _comparison_summary(
     expectations: Dict[str, Any],
     analytics: Dict[str, Any],
@@ -269,12 +398,24 @@ def build_interpretation_summary(
     failure_analysis: Dict[str, Any],
     metadata: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    metadata = metadata or {}
 
-    numerical_derivative = False
-    if metadata:
-        numerical_derivative = bool(metadata.get("numerical_derivative", False))
-
+    numerical_derivative = bool(metadata.get("numerical_derivative", False))
     derivative_mode = "numerical" if numerical_derivative else "analytic"
+
+    problem_type = str(
+        expectations.get("problem_type")
+        or metadata.get("problem_type")
+        or "custom"
+    ).strip().lower()
+
+    benchmark_id = metadata.get("benchmark_id")
+    benchmark_name = metadata.get("benchmark_name")
+    benchmark_category = metadata.get("benchmark_category")
+
+    analytic_notes = expectations.get("analytic_notes") or metadata.get("analytic_notes")
+    known_roots = expectations.get("known_roots") or metadata.get("known_roots") or []
+    expected_root_count = len(known_roots) if isinstance(known_roots, list) else 0
 
     root_cov = _root_coverage_interpretation(
         expectations=expectations,
@@ -283,6 +424,11 @@ def build_interpretation_summary(
     )
 
     failure_interp = _failure_interpretation(
+        expectations=expectations,
+        failure_analysis=failure_analysis,
+    )
+
+    newton_pathology_interp = _newton_pathology_interpretation(
         expectations=expectations,
         failure_analysis=failure_analysis,
     )
@@ -301,7 +447,6 @@ def build_interpretation_summary(
 
     top_summary: List[str] = []
 
-    # --- Derivative mode explanation ---
     if numerical_derivative:
         top_summary.append(
             "Derivative-based methods (Newton-family solvers) used numerical derivative approximation rather than analytic derivatives."
@@ -311,24 +456,108 @@ def build_interpretation_summary(
             "Derivative-based methods used analytic derivatives supplied by the problem definition."
         )
 
-    expected_roots = _safe_get(expectations, "analytic_checks", "root_candidate_count", default=0)
-    sign_change_roots = _safe_get(expectations, "analytic_checks", "sign_change_interval_count", default=0)
+    newton_pathology_status = newton_pathology_interp.get("status")
+    if newton_pathology_status == "interpreted":
+        pathology_details = newton_pathology_interp.get("details") or {}
+        risk_band = pathology_details.get("expected_newton_risk_band", "unknown")
+        risk_score = pathology_details.get("expected_newton_risk_score")
+        instability_regions = pathology_details.get("instability_regions") or {}
+        instability_fraction = float(instability_regions.get("instability_fraction", 0.0))
 
-    if expected_roots and sign_change_roots < expected_roots:
         top_summary.append(
-            f"The problem definition suggests about {expected_roots} root candidate(s), but only {sign_change_roots} sign-change-accessible root region(s), so bracket-family methods are analytically expected to have structurally smaller coverage."
+            f"Analytic Newton pathology scan classified the problem domain as {risk_band} risk"
+            + (f" (score={risk_score})." if risk_score is not None else ".")
+        )
+        top_summary.append(
+            f"Predicted Newton instability regions cover about {instability_fraction:.4f} of the analyzed domain."
+        )
+
+        confidence = newton_pathology_interp.get("confidence") or {}
+        if confidence:
+            confidence_band = confidence.get("confidence_band", "unknown")
+            agreement_label = confidence.get("agreement_label", "unknown")
+            top_summary.append(
+                f"Confidence in the Newton interpretation is {confidence_band}, with {agreement_label} agreement between analytic risk prediction and observed outcomes."
+            )
+
+        for note in newton_pathology_interp.get("comparison_to_observed", [])[:2]:
+            if "Confidence in the Newton interpretation" not in note:
+                top_summary.append(note)
+
+    if problem_type == "benchmark":
+        if benchmark_name:
+            if benchmark_category:
+                top_summary.append(
+                    f"This experiment used benchmark {benchmark_id} ({benchmark_name}) from the {benchmark_category} category."
+                )
+            else:
+                top_summary.append(
+                    f"This experiment used benchmark {benchmark_id} ({benchmark_name})."
+                )
+
+        if expected_root_count > 0:
+            top_summary.append(
+                f"The benchmark metadata specifies {expected_root_count} known real root(s), so root coverage should be interpreted against that reference set."
+            )
+
+        if analytic_notes:
+            top_summary.append(
+                f"Analytic expectation from benchmark definition: {analytic_notes}"
+            )
+
+        if benchmark_category == "multiple_roots":
+            top_summary.append(
+                "Because this is a multiple-root benchmark, Newton-family methods are analytically expected to lose their ideal quadratic local convergence near repeated roots."
+            )
+
+        elif benchmark_category == "oscillatory":
+            top_summary.append(
+                "Because this is an oscillatory benchmark with multiple roots, basin fragmentation and incomplete root coverage are analytically plausible, especially for local open methods."
+            )
+
+        elif benchmark_category == "pathological":
+            top_summary.append(
+                "Because this is a pathological benchmark, instability, oscillation, or sensitivity to initialization should be treated as expected structural behavior rather than implementation error."
+            )
+
+        elif benchmark_category == "polynomial" and expected_root_count >= 3:
+            top_summary.append(
+                "Because this polynomial benchmark has several known roots, basin partitioning and multi-root coverage differences between methods are expected."
+            )
+
+        elif benchmark_category == "transcendental":
+            top_summary.append(
+                "Because this is a transcendental benchmark, solver behavior should be interpreted relative to the benchmark's known nonlinear structure rather than only algebraic intuition."
+            )
+
+    expected_roots_symbolic = _safe_get(
+        expectations, "analytic_checks", "root_candidate_count", default=0
+    )
+    sign_change_roots = _safe_get(
+        expectations, "analytic_checks", "sign_change_interval_count", default=0
+    )
+
+    if expected_roots_symbolic and sign_change_roots < expected_roots_symbolic:
+        top_summary.append(
+            f"The symbolic problem analysis suggests about {expected_roots_symbolic} root candidate(s), but only {sign_change_roots} sign-change-accessible root region(s), so bracket-family methods are analytically expected to have structurally smaller coverage."
         )
 
     failure_global = failure_interp.get("global_notes") or []
     top_summary.extend(failure_global[:2])
 
-    top_summary.extend((comparison.get("notes") or [])[:3])
+    comparison_notes = comparison.get("notes") or []
+    top_summary.extend(comparison_notes[:3])
 
     return {
+        "problem_type": problem_type,
+        "benchmark_id": benchmark_id,
+        "benchmark_name": benchmark_name,
+        "benchmark_category": benchmark_category,
         "derivative_mode": derivative_mode,
         "top_summary": top_summary,
         "root_coverage_interpretation": root_cov,
         "failure_interpretation": failure_interp,
+        "newton_pathology_interpretation": newton_pathology_interp,
         "root_basin_statistics_interpretation": basin_interp,
         "comparison_interpretation": comparison,
     }

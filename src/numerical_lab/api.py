@@ -5,28 +5,33 @@ import sys
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, Any, List, Dict
+from typing import Optional, List
 from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-
 from pydantic import BaseModel, Field, model_validator
-from numerical_lab.services.experiments_service import start_monte_carlo_job
-from numerical_lab.benchmarks.catalog import get_benchmark
+
+from numerical_lab.services.experiments_service import (
+    start_monte_carlo_job,
+    start_sweep_job,
+)
+from numerical_lab.benchmarks.registry import (
+    list_all,
+    get as get_registered_benchmark,
+)
+from numerical_lab.benchmarks.loader import load_benchmarks
 from numerical_lab.engine.controller import NumericalEngine
 from numerical_lab.engine.summary import build_comparison_summary
 from numerical_lab.diagnostics.explain import explain_run
-from numerical_lab.benchmarks.catalog import list_benchmarks, get_benchmark
 from numerical_lab.expr.safe_eval import compile_expr
 from numerical_lab.services.experiment_jobs import (
     create_job,
     get_job,
     list_jobs,
 )
-
-from numerical_lab.services.experiments_service import start_sweep_job
 
 
 # ---------------------------------------------------------
@@ -82,9 +87,19 @@ class RangeSpec(BaseModel):
     x_max: float
     n_points: Optional[int] = None
 
+
 class MonteCarloRequest(BaseModel):
     problem_id: str | None = None
-    methods: list[str] = Field(default_factory=lambda: ["newton", "secant", "bisection", "hybrid", "safeguarded_newton", "brent"])
+    methods: list[str] = Field(
+        default_factory=lambda: [
+            "newton",
+            "secant",
+            "bisection",
+            "hybrid",
+            "safeguarded_newton",
+            "brent",
+        ]
+    )
     x_min: float
     x_max: float
     n_samples: int = Field(default=1000, ge=1, le=200000)
@@ -120,7 +135,7 @@ class MonteCarloRequest(BaseModel):
 
 class SweepExperimentRequest(BaseModel):
     problem_mode: str = "benchmark"
-    problem_id: Optional[str] = None
+    benchmark_id: Optional[str] = None
 
     expr: Optional[str] = None
     dexpr: Optional[str] = None
@@ -171,8 +186,12 @@ class SweepExperimentRequest(BaseModel):
         if mode not in {"benchmark", "custom"}:
             raise ValueError("problem_mode must be benchmark or custom")
 
+        self.problem_mode = mode
+
         if sampling_mode not in {"grid", "uniform", "gaussian"}:
             raise ValueError("sampling_mode must be grid, uniform, or gaussian")
+
+        self.sampling_mode = sampling_mode
 
         if self.tol <= 0:
             raise ValueError("tol must be positive")
@@ -213,8 +232,10 @@ class SweepExperimentRequest(BaseModel):
                 raise ValueError("gaussian_std must be > 0 for gaussian mode")
 
         if mode == "benchmark":
-            if not self.problem_id:
-                self.problem_id = "p4"
+            if not self.benchmark_id or str(self.benchmark_id).strip() == "":
+                self.benchmark_id = "poly_01"
+            else:
+                self.benchmark_id = str(self.benchmark_id).strip()
             return self
 
         if not self.expr or str(self.expr).strip() == "":
@@ -234,13 +255,13 @@ class SweepExperimentRequest(BaseModel):
                 raise ValueError("x_min must be < x_max")
 
         return self
-    
+
+
 # ---------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------
 
 def _default_secant_guesses(a, b, x0, x1):
-
     mid = 0.5 * (a + b)
 
     xx0 = mid if x0 is None else float(x0)
@@ -266,7 +287,6 @@ def _run_path(run_id: str):
 
 
 def save_run(payload: dict):
-
     run_id = uuid.uuid4().hex[:12]
 
     meta = {
@@ -291,7 +311,6 @@ def save_run(payload: dict):
 
 
 def load_run(run_id: str):
-
     path = _run_path(run_id)
 
     if not os.path.exists(path):
@@ -302,18 +321,15 @@ def load_run(run_id: str):
 
 
 def list_runs(limit=20):
-
     items = []
 
     for name in os.listdir(RUNS_DIR):
-
         if not name.endswith(".json"):
             continue
 
         path = os.path.join(RUNS_DIR, name)
 
         try:
-
             with open(path, "r", encoding="utf-8") as f:
                 obj = json.load(f)
 
@@ -332,7 +348,6 @@ def list_runs(limit=20):
             continue
 
     items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
-
     return items[:limit]
 
 
@@ -342,10 +357,9 @@ def list_runs(limit=20):
 
 app = FastAPI()
 
-
-
 OUTPUTS_DIR = Path("outputs")
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
 app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 app.add_middleware(
     CORSMiddleware,
@@ -357,17 +371,21 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------
-# Health
+# Startup / Health
 # ---------------------------------------------------------
 
+@app.on_event("startup")
+def startup_event() -> None:
+    load_benchmarks()
 
 
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "service": "numerical-solver-backend"
+        "service": "numerical-solver-backend",
     }
+
 
 @app.get("/__whoami")
 def whoami():
@@ -380,16 +398,50 @@ def whoami():
 
 
 # ---------------------------------------------------------
+# Benchmarks
+# ---------------------------------------------------------
+
+@app.get("/benchmarks")
+def get_benchmarks():
+    return [
+        {
+            "id": p.problem_id,
+            "name": p.name,
+            "category": p.category,
+            "domain": list(p.domain),
+            "description": p.description,
+        }
+        for p in list_all()
+    ]
+
+
+@app.get("/benchmarks/{bench_id}")
+def benchmark_by_id(bench_id: str):
+    try:
+        p = get_registered_benchmark(str(bench_id).strip())
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+
+    return {
+        "id": p.problem_id,
+        "name": p.name,
+        "category": p.category,
+        "domain": list(p.domain),
+        "known_roots": p.known_roots,
+        "description": p.description,
+        "analytic_notes": p.analytic_notes,
+    }
+
+
+# ---------------------------------------------------------
 # Experiment Jobs
 # ---------------------------------------------------------
 
 @app.post("/experiments/sweep")
 def create_sweep_experiment(req: SweepExperimentRequest):
-
     payload = req.model_dump(exclude_none=True)
 
     job = create_job(job_type="sweep", message="Sweep job created")
-
     start_sweep_job(job.job_id, payload)
 
     return {
@@ -407,31 +459,18 @@ def run_monte_carlo_experiment_api(payload: MonteCarloRequest):
             detail="problem_id is required for Monte Carlo experiments",
         )
 
-    problem_id = str(payload.problem_id).strip().upper()
-    benchmark = get_benchmark(problem_id)
+    benchmark_id = str(payload.problem_id).strip()
 
-    if benchmark is None:
+    try:
+        benchmark = get_registered_benchmark(benchmark_id)
+    except KeyError:
         raise HTTPException(
             status_code=404,
-            detail=f"Unknown benchmark: {problem_id}",
+            detail=f"Unknown benchmark: {benchmark_id}",
         )
 
-    from numerical_lab.expr.safe_eval import compile_expr
-
-    expr = benchmark.get("expr")
-    dexpr = benchmark.get("dexpr")
-
-    if not expr:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Benchmark {problem_id} does not define 'expr'",
-        )
-
-    f = compile_expr(expr)
-
-    df = None
-    if dexpr and str(dexpr).strip():
-        df = compile_expr(dexpr)
+    f = benchmark.function
+    df = benchmark.derivative
 
     derivative_methods = {"newton", "hybrid", "safeguarded_newton"}
     needs_df = any(m in derivative_methods for m in payload.methods)
@@ -446,7 +485,7 @@ def run_monte_carlo_experiment_api(payload: MonteCarloRequest):
         )
 
     job_id = start_monte_carlo_job(
-        problem_id=problem_id,   # normalized value
+        problem_id=benchmark.problem_id,
         f=f,
         df=df,
         methods=payload.methods,
@@ -470,9 +509,9 @@ def run_monte_carlo_experiment_api(payload: MonteCarloRequest):
         "message": "Monte Carlo experiment started",
     }
 
+
 @app.get("/experiments/jobs")
 def get_experiment_jobs():
-
     jobs = list_jobs()
 
     return [
@@ -490,24 +529,9 @@ def get_experiment_jobs():
         for j in jobs
     ]
 
-@app.get("/artifacts/json")
-def read_json_artifact(path: str):
-    p = Path(path)
-    if not p.exists():
-      raise HTTPException(status_code=404, detail="Artifact not found")
-    with open(p, "r", encoding="utf-8") as f:
-      return json.load(f)
-
-@app.get("/artifacts/file")
-def get_artifact_file(path: str):
-    p = Path(path)
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    return FileResponse(path=p)    
 
 @app.get("/experiments/jobs/{job_id}")
 def get_experiment_job(job_id: str):
-
     job = get_job(job_id)
 
     if not job:
@@ -528,14 +552,34 @@ def get_experiment_job(job_id: str):
 
 
 # ---------------------------------------------------------
+# Artifacts
+# ---------------------------------------------------------
+
+@app.get("/artifacts/json")
+def read_json_artifact(path: str):
+    p = Path(path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    with open(p, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@app.get("/artifacts/file")
+def get_artifact_file(path: str):
+    p = Path(path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    return FileResponse(path=p)
+
+
+# ---------------------------------------------------------
 # Compare endpoint
 # ---------------------------------------------------------
 
 @app.post("/compare")
 def compare(req: CompareRequest):
-
-    from numerical_lab.expr.safe_eval import compile_expr
-
     f = compile_expr(req.expr)
 
     df = None
@@ -555,11 +599,9 @@ def compare(req: CompareRequest):
     )
 
     summaries = build_comparison_summary(comp)
-
     out = {"request": req.model_dump()}
 
     for method, triple in comp.items():
-
         result, conv, stab = triple
         summary = summaries[method]
 
@@ -592,9 +634,7 @@ def compare(req: CompareRequest):
 
 @app.post("/runs", response_model=CreateRunResponse)
 def create_run(req: CompareRequest):
-
     payload = compare(req)
-
     run_id = save_run(payload)
 
     return CreateRunResponse(
@@ -605,35 +645,12 @@ def create_run(req: CompareRequest):
 
 @app.get("/runs/{run_id}")
 def get_run(run_id: str):
-
     try:
         return load_run(run_id)
-
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Run not found")
 
 
 @app.get("/runs")
 def get_recent_runs(limit: int = Query(20, ge=1, le=200)):
-
     return {"runs": list_runs(limit)}
-
-
-# ---------------------------------------------------------
-# Benchmarks
-# ---------------------------------------------------------
-
-@app.get("/benchmarks")
-def benchmarks():
-    return {"benchmarks": list_benchmarks()}
-
-
-@app.get("/benchmarks/{bench_id}")
-def benchmark_by_id(bench_id: str):
-
-    obj = get_benchmark(bench_id)
-
-    if obj is None:
-        raise HTTPException(status_code=404, detail="Benchmark not found")
-
-    return obj

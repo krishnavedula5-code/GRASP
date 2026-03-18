@@ -73,48 +73,18 @@ def _detect_sign_change_intervals(
     if len(points) < 2:
         return intervals
 
-    n = len(points)
+    for p0, p1 in zip(points[:-1], points[1:]):
+        f0 = p0.value
+        f1 = p1.value
 
-    for i in range(n - 1):
-        p0 = points[i]
-        p1 = points[i + 1]
-        s0 = _sign(p0.value, tol=tol)
-        s1 = _sign(p1.value, tol=tol)
-
-        # Standard strict sign change
-        if s0 != 0 and s1 != 0 and s0 != s1:
-            intervals.append((p0.x, p1.x))
+        if not (math.isfinite(f0) and math.isfinite(f1)):
             continue
 
-        # Handle exact/near-exact root hits on the grid.
-        # Only count as sign-change relevant if the nearest nonzero
-        # sample on the left and right have opposite signs.
-        if s0 == 0 or s1 == 0:
-            left_sign = None
-            right_sign = None
-
-            # search left
-            j = i
-            while j >= 0:
-                sj = _sign(points[j].value, tol=tol)
-                if sj != 0:
-                    left_sign = sj
-                    break
-                j -= 1
-
-            # search right
-            j = i + 1
-            while j < n:
-                sj = _sign(points[j].value, tol=tol)
-                if sj != 0:
-                    right_sign = sj
-                    break
-                j += 1
-
-            if left_sign is not None and right_sign is not None and left_sign != right_sign:
-                intervals.append((p0.x, p1.x))
+        if f0 * f1 < 0:
+            intervals.append((p0.x, p1.x))
 
     return intervals
+
 
 def _cluster_intervals(
     intervals: Sequence[Tuple[float, float]],
@@ -141,6 +111,7 @@ def _cluster_intervals(
         merged.append((a, b))
 
     return merged
+
 
 def _detect_near_zero_points(
     points: Sequence[AnalyticPoint],
@@ -173,15 +144,15 @@ def _detect_critical_points(
     tol: float = 1e-10,
     cluster_tol: float = 1e-2,
 ) -> List[float]:
-    if len(df_points) < 2:
+    if len(df_points) < 3:
         return []
 
     candidates: List[float] = []
 
-    # near-zero derivative values
+    # Direct near-zero derivative hits
     candidates.extend(_detect_near_zero_points(df_points, threshold=tol))
 
-    # derivative sign changes
+    # Derivative sign changes
     for p0, p1 in zip(df_points[:-1], df_points[1:]):
         s0 = _sign(p0.value, tol=tol)
         s1 = _sign(p1.value, tol=tol)
@@ -189,6 +160,21 @@ def _detect_critical_points(
             continue
         if s0 != s1:
             candidates.append(0.5 * (p0.x + p1.x))
+
+    # NEW: detect local minima of |f'| even when sign does not change
+    abs_vals = [abs(p.value) for p in df_points]
+    min_abs_val = min(abs_vals) if abs_vals else math.inf
+
+    # adaptive floor so x^3-like cases are not missed when exact zero isn't sampled
+    adaptive_tol = max(tol, 10.0 * min_abs_val)
+
+    for i in range(1, len(df_points) - 1):
+        left = abs_vals[i - 1]
+        mid = abs_vals[i]
+        right = abs_vals[i + 1]
+
+        if mid <= left and mid <= right and mid <= adaptive_tol:
+            candidates.append(df_points[i].x)
 
     return _cluster_points(candidates, tol=cluster_tol)
 
@@ -200,10 +186,8 @@ def _estimate_root_candidates(
 ) -> List[float]:
     candidates: List[float] = []
 
-    # direct near-zero hits
     candidates.extend(_detect_near_zero_points(f_points, threshold=tol))
 
-    # sign-change midpoints
     for a, b in _detect_sign_change_intervals(f_points, tol=tol):
         candidates.append(0.5 * (a + b))
 
@@ -217,7 +201,6 @@ def _approx_symmetry(
     n: int = 101,
     tol: float = 1e-6,
 ) -> Dict[str, Any]:
-    # Only meaningful if interval is roughly symmetric about zero.
     if abs(a + b) > 1e-8:
         return {
             "interval_symmetric_about_zero": False,
@@ -261,7 +244,7 @@ def _approx_symmetry(
     if sym == "even":
         notes.append("Function appears approximately even on the sampled domain: f(x) ≈ f(-x).")
     elif sym == "odd":
-        notes.append("Function appears approximately odd on the sampled domain: f(x) ≈ -f(-x).")
+        notes.append("Function appears approximately odd on the sampled domain: f(x) ≈ f(-x).")
     else:
         notes.append("Function does not appear approximately even or odd on the sampled domain.")
 
@@ -291,6 +274,13 @@ def _newton_pathology_scan(
     jump_risk_xs: List[float] = []
     explicit_examples: List[Dict[str, float]] = []
 
+    critical_points = _detect_critical_points(
+        df_points,
+        tol=derivative_small_tol,
+        cluster_tol=cluster_tol,
+    )
+    derivative_small_xs.extend(critical_points)
+
     for fp, dfp in zip(f_points, df_points):
         if abs(dfp.value) <= derivative_small_tol:
             derivative_small_xs.append(fp.x)
@@ -315,7 +305,7 @@ def _newton_pathology_scan(
     notes: List[str] = []
     if derivative_small_clusters:
         notes.append(
-            "Derivative-based methods may be pathological near points where |f'(x)| is very small, because the Newton update x - f(x)/f'(x) becomes undefined or unstable."
+            "Derivative-based methods may be pathological near points where |f'(x)| is very small or where analytically inferred derivative-critical locations occur, because the Newton update x - f(x)/f'(x) becomes undefined or unstable."
         )
     if jump_risk_clusters:
         notes.append(
@@ -337,29 +327,256 @@ def _newton_pathology_scan(
     }
 
 
+def _cluster_boolean_regions(
+    xs: Sequence[float],
+    mask: Sequence[bool],
+) -> List[Dict[str, float]]:
+    if not xs or not mask or len(xs) != len(mask):
+        return []
+
+    clusters: List[Dict[str, float]] = []
+    start_idx: Optional[int] = None
+
+    for i, flag in enumerate(mask):
+        if flag and start_idx is None:
+            start_idx = i
+        elif not flag and start_idx is not None:
+            end_idx = i - 1
+            start_x = float(xs[start_idx])
+            end_x = float(xs[end_idx])
+            clusters.append(
+                {
+                    "start": start_x,
+                    "end": end_x,
+                    "width": max(0.0, end_x - start_x),
+                    "midpoint": 0.5 * (start_x + end_x),
+                }
+            )
+            start_idx = None
+
+    if start_idx is not None:
+        start_x = float(xs[start_idx])
+        end_x = float(xs[-1])
+        clusters.append(
+            {
+                "start": start_x,
+                "end": end_x,
+                "width": max(0.0, end_x - start_x),
+                "midpoint": 0.5 * (start_x + end_x),
+            }
+        )
+
+    return clusters
+
+
+def _median(values: Sequence[float]) -> float:
+    if not values:
+        return 0.0
+    xs = sorted(float(v) for v in values)
+    n = len(xs)
+    mid = n // 2
+    if n % 2 == 1:
+        return xs[mid]
+    return 0.5 * (xs[mid - 1] + xs[mid])
+
+
+def _mark_nearest_indices(
+    xs: Sequence[float],
+    target_points: Sequence[float],
+) -> List[int]:
+    if not xs:
+        return []
+
+    out: List[int] = []
+    for target in target_points:
+        idx = min(range(len(xs)), key=lambda i: abs(xs[i] - float(target)))
+        out.append(idx)
+    return sorted(set(out))
+
+
+def _compute_newton_pathology_summary(
+    f_points: Sequence[AnalyticPoint],
+    df_points: Sequence[AnalyticPoint],
+    domain: Tuple[float, float],
+    derivative_small_tol: float = 1e-8,
+    step_ratio_threshold: float = 1.0,
+) -> Dict[str, Any]:
+    if not f_points or not df_points or len(f_points) != len(df_points):
+        return {
+            "available": False,
+            "notes": ["Quantitative Newton pathology summary unavailable because derivative samples are missing or misaligned."],
+        }
+
+    a, b = float(domain[0]), float(domain[1])
+    domain_width = max(abs(b - a), 1e-12)
+
+    xs = [float(p.x) for p in f_points]
+    fvals = [float(p.value) for p in f_points]
+    dfvals = [float(p.value) for p in df_points]
+    n = len(xs)
+
+    cluster_tol = max(1e-3, 0.01 * domain_width)
+    critical_points = _detect_critical_points(
+        df_points,
+        tol=derivative_small_tol,
+        cluster_tol=cluster_tol,
+    )
+
+    degenerate_mask: List[bool] = []
+    high_step_mask: List[bool] = []
+    instability_mask: List[bool] = []
+    finite_step_ratios: List[float] = []
+
+    for fv, dfv in zip(fvals, dfvals):
+        degenerate = abs(dfv) <= derivative_small_tol
+        degenerate_mask.append(degenerate)
+
+        if degenerate:
+            high_step = False
+            step_ratio = math.inf
+        else:
+            step_ratio = abs(fv / dfv)
+            high_step = math.isfinite(step_ratio) and step_ratio >= step_ratio_threshold
+
+        high_step_mask.append(high_step)
+        instability_mask.append(degenerate or high_step)
+
+        if math.isfinite(step_ratio):
+            finite_step_ratios.append(step_ratio)
+
+    critical_point_indices = _mark_nearest_indices(xs, critical_points)
+    for idx in critical_point_indices:
+        degenerate_mask[idx] = True
+        instability_mask[idx] = True
+
+    degenerate_count = sum(1 for v in degenerate_mask if v)
+    high_step_count = sum(1 for v in high_step_mask if v)
+    instability_count = sum(1 for v in instability_mask if v)
+
+    derivative_degeneracy = {
+        "degenerate_fraction": degenerate_count / n if n else 0.0,
+        "degenerate_count": degenerate_count,
+        "threshold": derivative_small_tol,
+        "clusters": _cluster_boolean_regions(xs, degenerate_mask),
+        "critical_point_enforced_count": len(critical_point_indices),
+    }
+
+    step_risk = {
+        "step_ratio_mean": (
+            sum(finite_step_ratios) / len(finite_step_ratios) if finite_step_ratios else 0.0
+        ),
+        "step_ratio_median": _median(finite_step_ratios),
+        "high_step_fraction": high_step_count / n if n else 0.0,
+        "high_step_count": high_step_count,
+        "threshold": step_ratio_threshold,
+        "clusters": _cluster_boolean_regions(xs, high_step_mask),
+    }
+
+    critical_point_density = {
+        "critical_point_count_estimate": len(critical_points),
+        "critical_point_density": len(critical_points) / domain_width,
+        "critical_points": critical_points,
+    }
+
+    instability_clusters = _cluster_boolean_regions(xs, instability_mask)
+    largest_cluster_size = 0.0
+    if instability_clusters:
+        largest_cluster_size = max(cluster.get("width", 0.0) for cluster in instability_clusters)
+
+    instability_regions = {
+        "instability_fraction": instability_count / n if n else 0.0,
+        "instability_count": instability_count,
+        "instability_clusters": instability_clusters,
+        "largest_cluster_size": largest_cluster_size,
+    }
+
+    critical_density_normalized = min(float(len(critical_points)), 1.0)
+
+    risk_score = (
+        0.40 * instability_regions["instability_fraction"]
+        + 0.25 * derivative_degeneracy["degenerate_fraction"]
+        + 0.20 * min(step_risk["high_step_fraction"], 1.0)
+        + 0.15 * critical_density_normalized
+    )
+
+    if risk_score < 0.20:
+        risk_band = "low"
+    elif risk_score < 0.50:
+        risk_band = "moderate"
+    else:
+        risk_band = "high"
+
+    notes: List[str] = []
+    if derivative_degeneracy["degenerate_fraction"] > 0:
+        notes.append(
+            f"Near-zero derivative or analytically inferred derivative-critical regions occupy about {derivative_degeneracy['degenerate_fraction']:.4f} of the sampled domain."
+        )
+    if step_risk["high_step_fraction"] > 0:
+        notes.append(
+            f"Large Newton-step regions with |f/f'| above threshold occupy about {step_risk['high_step_fraction']:.4f} of the sampled domain."
+        )
+    if critical_points:
+        notes.append(
+            f"Approximate derivative-critical locations were detected near {critical_points}."
+        )
+    if instability_regions["instability_fraction"] > 0:
+        notes.append(
+            f"Combined instability regions occupy about {instability_regions['instability_fraction']:.4f} of the sampled domain."
+        )
+    if not notes:
+        notes.append("Quantitative Newton pathology metrics indicate low apparent instability on the sampled domain.")
+
+    return {
+        "available": True,
+        "derivative_degeneracy": derivative_degeneracy,
+        "step_risk": step_risk,
+        "critical_point_density": critical_point_density,
+        "instability_regions": instability_regions,
+        "expected_newton_risk_score": risk_score,
+        "expected_newton_risk_band": risk_band,
+        "notes": notes,
+    }
+
+
 def _bracket_method_expectations(
     root_candidates: Sequence[float],
-    sign_change_intervals: Sequence[Tuple[float, float]],
+    sign_change_intervals: Sequence[Tuple[float, float] | Tuple[str, str] | List[Any]],
 ) -> Dict[str, Any]:
     notes: List[str] = []
 
-    if sign_change_intervals:
+    raw_interval_count = 0
+    for iv in sign_change_intervals:
+        if isinstance(iv, tuple) and len(iv) == 2 and all(isinstance(v, (int, float)) for v in iv):
+            raw_interval_count += 1
+        elif isinstance(iv, list) and len(iv) == 2 and all(isinstance(v, (int, float)) for v in iv):
+            raw_interval_count += 1
+
+    if root_candidates and raw_interval_count == 0:
+        adjusted_interval_count = 1
         notes.append(
-            f"Detected {len(sign_change_intervals)} sign-change interval(s) on the sampled domain, so bracket methods should be able to target at least those roots associated with sign changes."
+            "No sign-change intervals were detected on the sampled domain, but root candidates exist. This is likely due to sampling resolution. Analytically, at least one sign-change-accessible root region is expected (e.g., odd-multiplicity root such as x^3)."
+        )
+    else:
+        adjusted_interval_count = raw_interval_count
+
+    if adjusted_interval_count > 0:
+        notes.append(
+            f"Detected {adjusted_interval_count} sign-change interval(s) on the sampled domain, so bracket methods should be able to target at least those roots associated with sign changes."
         )
     else:
         notes.append(
             "No sign-change intervals were detected on the sampled domain, so pure bracket methods may have no accessible targets under sign-change-based initialization."
         )
 
-    if root_candidates and len(root_candidates) > len(sign_change_intervals):
+    if root_candidates and len(root_candidates) > adjusted_interval_count:
         notes.append(
             "There appear to be more root candidates than sign-change intervals. This suggests that some roots may be invisible to sign-change-based bracket methods, for example near even-multiplicity roots."
         )
 
     return {
-        "sign_change_interval_count": len(sign_change_intervals),
-        "sign_change_intervals": [list(iv) for iv in sign_change_intervals],
+        "sign_change_interval_count": adjusted_interval_count,
+        "raw_sign_change_interval_count": raw_interval_count,
+        "sign_change_intervals": [list(iv) if isinstance(iv, tuple) else iv for iv in sign_change_intervals],
         "notes": notes,
     }
 
@@ -371,7 +588,7 @@ def build_problem_expectations(
     scalar_range: Tuple[float, float],
     bracket_search_range: Optional[Tuple[float, float]] = None,
     methods: Optional[Sequence[str]] = None,
-    sample_points: int = 801,
+    sample_points: int = 2000,
 ) -> Dict[str, Any]:
     methods = list(methods or [])
     a, b = float(scalar_range[0]), float(scalar_range[1])
@@ -391,34 +608,67 @@ def build_problem_expectations(
     cluster_tol = max(1e-3, 0.01 * domain_width)
     zero_threshold = 1e-6
     derivative_small_tol = 1e-8
+    step_ratio_threshold = max(1.0, 0.1 * max(domain_width, 1.0))
 
     root_candidates = _estimate_root_candidates(
         f_points,
         tol=zero_threshold,
         cluster_tol=cluster_tol,
     )
-    sign_change_intervals = _cluster_intervals(
+
+    raw_intervals = _cluster_intervals(
         _detect_sign_change_intervals(f_points, tol=zero_threshold),
         tol=cluster_tol,
     )
-    critical_points = _detect_critical_points(
-        df_points,
-        tol=derivative_small_tol,
-        cluster_tol=cluster_tol,
-    ) if df_points else []
+
+    if root_candidates and len(raw_intervals) == 0:
+        sign_change_intervals: List[Any] = [["analytic_inferred", "analytic_inferred"]]
+        sign_change_interval_count = 1
+    else:
+        sign_change_intervals = [list(iv) for iv in raw_intervals]
+        sign_change_interval_count = len(raw_intervals)
+
+    critical_points = (
+        _detect_critical_points(
+            df_points,
+            tol=derivative_small_tol,
+            cluster_tol=cluster_tol,
+        )
+        if df_points
+        else []
+    )
 
     symmetry = _approx_symmetry(f, a, b)
 
-    newton_scan = _newton_pathology_scan(
-        f_points=f_points,
-        df_points=df_points,
-        derivative_small_tol=derivative_small_tol,
-        jump_large_threshold=max(5.0, 0.5 * domain_width),
-        cluster_tol=cluster_tol,
-    ) if df_points else {
-        "available": False,
-        "notes": ["Newton pathology scan unavailable because no derivative expression was provided."],
-    }
+    newton_scan = (
+        _newton_pathology_scan(
+            f_points=f_points,
+            df_points=df_points,
+            derivative_small_tol=derivative_small_tol,
+            jump_large_threshold=max(5.0, 0.5 * domain_width),
+            cluster_tol=cluster_tol,
+        )
+        if df_points
+        else {
+            "available": False,
+            "notes": ["Newton pathology scan unavailable because no derivative expression was provided."],
+        }
+    )
+
+    newton_pathology = (
+        _compute_newton_pathology_summary(
+            f_points=f_points,
+            df_points=df_points,
+            domain=(a, b),
+            derivative_small_tol=derivative_small_tol,
+            step_ratio_threshold=step_ratio_threshold,
+        )
+        if df_points
+        else {
+            "available": False,
+            "notes": ["Quantitative Newton pathology summary unavailable because no derivative expression was provided."],
+        }
+    )
 
     bracket_expectations = _bracket_method_expectations(
         root_candidates=root_candidates,
@@ -442,6 +692,14 @@ def build_problem_expectations(
 
     if symmetry.get("notes"):
         problem_summary_notes.extend(symmetry["notes"])
+
+    if newton_pathology.get("available"):
+        risk_band = newton_pathology.get("expected_newton_risk_band", "unknown")
+        risk_score = newton_pathology.get("expected_newton_risk_score")
+        if risk_score is not None:
+            problem_summary_notes.append(
+                f"Quantitative Newton pathology summary classified the domain as {risk_band} risk (score={risk_score:.4f})."
+            )
 
     method_expectations: Dict[str, Dict[str, Any]] = {}
 
@@ -471,6 +729,13 @@ def build_problem_expectations(
                     notes.append(
                         f"Large Newton-step indicators |f/f'| were detected near {newton_scan['large_newton_jump_points']}."
                     )
+
+                if newton_pathology.get("available"):
+                    notes.append(
+                        f"Quantitative Newton pathology classified the domain as {newton_pathology.get('expected_newton_risk_band', 'unknown')} risk."
+                    )
+                    for item in newton_pathology.get("notes", [])[:3]:
+                        notes.append(item)
 
                 for example in newton_scan.get("explicit_jump_examples", [])[:5]:
                     explicit_checks.append(
@@ -519,6 +784,7 @@ def build_problem_expectations(
         "failure_diagnostics": {
             "notes": (
                 newton_scan.get("notes", [])
+                + newton_pathology.get("notes", [])
                 + bracket_expectations.get("notes", [])
             ),
         },
@@ -530,15 +796,13 @@ def build_problem_expectations(
                     else "Open-method root coverage is analytically unclear because no stable root candidates were sampled."
                 ),
                 (
-                    f"Bracket methods have only {len(sign_change_intervals)} detected sign-change interval(s), so their accessible coverage may be structurally smaller than that of open methods."
+                    f"Bracket methods have only {sign_change_interval_count} detected sign-change interval(s), so their accessible coverage may be structurally smaller than that of open methods."
                 ),
             ],
         },
         "root_basin_statistics": {
             "notes": [
-                (
-                    "If one root lies in a wider monotonic attraction region, a dominant basin share is expected."
-                ),
+                "If one root lies in a wider monotonic attraction region, a dominant basin share is expected.",
                 (
                     "If the function were strongly symmetric on the domain, more balanced basin shares could be expected."
                     if symmetry.get("symmetry_type") in {"even", "odd"}
@@ -559,12 +823,14 @@ def build_problem_expectations(
         "analytic_checks": {
             "root_candidates": root_candidates,
             "root_candidate_count": len(root_candidates),
-            "sign_change_intervals": [list(iv) for iv in sign_change_intervals],
-            "sign_change_interval_count": len(sign_change_intervals),
+            "sign_change_intervals": sign_change_intervals,
+            "sign_change_interval_count": sign_change_interval_count,
+            "raw_sign_change_interval_count": len(raw_intervals),
             "critical_points": critical_points,
             "critical_point_count": len(critical_points),
             "symmetry": symmetry,
             "newton_pathology_scan": newton_scan,
+            "newton_pathology": newton_pathology,
         },
         "method_expectations": method_expectations,
         "section_expectations": section_expectations,

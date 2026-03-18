@@ -70,15 +70,24 @@ def _extract_x0(row: dict) -> float | None:
 
 
 def _extract_root(row: dict) -> float | None:
-    for key in ("final_root", "root", "x_star", "solution", "final_x", "x"):
+    """
+    Extract the converged/root solution field only.
+
+    Important:
+    Do NOT fall back to generic 'x', because in sweep records that may refer
+    to an initialization/sample coordinate rather than the converged root.
+    """
+    for key in ("final_root", "root", "x_star", "solution", "final_x"):
         if key in row:
             try:
-                return float(row[key])
+                value = float(row[key])
+                if math.isfinite(value):
+                    return value
             except (TypeError, ValueError):
                 return None
     return None
 
-
+    
 def _get_method_rows(rows: list[dict], method: str) -> list[dict]:
     return [
         r for r in rows

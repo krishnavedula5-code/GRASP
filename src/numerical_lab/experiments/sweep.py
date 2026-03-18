@@ -662,44 +662,56 @@ def run_problem_sweeps(
     if bracket_initial_points is not None:
         bracket_initial_points = [float(x) for x in bracket_initial_points]
 
-    f = compile_expr(problem.expr)
-    df = None if numerical_derivative else (compile_expr(problem.dexpr) if problem.dexpr else None)
+    # ---------------------------------------------------------
+    # Problem function resolution
+    # ---------------------------------------------------------
+    has_callable_function = callable(getattr(problem, "function", None))
+    has_callable_derivative = callable(getattr(problem, "derivative", None))
+
+    if has_callable_function:
+        f = problem.function
+        df = None if numerical_derivative else (problem.derivative if has_callable_derivative else None)
+        is_benchmark_callable_mode = True
+    else:
+        f = compile_expr(problem.expr)
+        df = None if numerical_derivative else (compile_expr(problem.dexpr) if problem.dexpr else None)
+        is_benchmark_callable_mode = False
+
+    # ---------------------------------------------------------
+    # Root discovery support for interpretation / clustering
+    # ---------------------------------------------------------
     discovered_clusters: Optional[List[RootCluster]] = None
-
     root_discovery_n = max(len(scalar_initial_points), 2)
 
-    if (
-        not numerical_derivative
-        and problem.dexpr is not None
-        and any(m in methods_to_run for m in ("newton", "hybrid", "safeguarded_newton"))
-    ):
-        discovered_clusters = discover_roots(
-            expr=problem.expr,
-            dexpr=problem.dexpr,
-            xmin=problem.scalar_range[0],
-            xmax=problem.scalar_range[1],
-            n=root_discovery_n,
-            tol=tol,
-            max_iter=max_iter,
-            cluster_tol=1e-4,
-            residual_tol=1e-8,
-        )
-    root_discovery_n = max(len(scalar_initial_points), 2)
-
-    if problem.dexpr is not None and any(
-        m in methods_to_run for m in ("newton", "hybrid", "safeguarded_newton")
-    ):
-        discovered_clusters = discover_roots(
-            expr=problem.expr,
-            dexpr=problem.dexpr,
-            xmin=problem.scalar_range[0],
-            xmax=problem.scalar_range[1],
-            n=root_discovery_n,
-            tol=tol,
-            max_iter=max_iter,
-            cluster_tol=1e-4,
-            residual_tol=1e-8,
-        )
+    if is_benchmark_callable_mode:
+        # For benchmark mode, symbolic discovery is unavailable.
+        # Use known roots when present as lightweight cluster references.
+        known_roots = getattr(problem, "known_roots", None)
+        if known_roots:
+            try:
+                discovered_clusters = [
+                    RootCluster(center=float(r), members=[float(r)])
+                    for r in known_roots
+                ]
+            except Exception:
+                discovered_clusters = None
+    else:
+        if (
+            not numerical_derivative
+            and problem.dexpr is not None
+            and any(m in methods_to_run for m in ("newton", "hybrid", "safeguarded_newton"))
+        ):
+            discovered_clusters = discover_roots(
+                expr=problem.expr,
+                dexpr=problem.dexpr,
+                xmin=problem.scalar_range[0],
+                xmax=problem.scalar_range[1],
+                n=root_discovery_n,
+                tol=tol,
+                max_iter=max_iter,
+                cluster_tol=1e-4,
+                residual_tol=1e-8,
+            )
 
     records: List[SweepRunRecord] = []
 
@@ -770,10 +782,6 @@ def run_problem_sweeps(
                     )
                 )
 
-    # Note:
-    # Bracketing-based methods currently use sign-change bracket discovery over
-    # problem.bracket_search_range. They do not yet consume bracket_initial_points
-    # or Monte Carlo-style sampled bracket seeds.
     need_brackets = any(
         m in methods_to_run for m in ("bisection", "hybrid", "safeguarded_newton", "brent")
     )
@@ -923,6 +931,7 @@ def run_problem_sweeps(
                             clusters=discovered_clusters,
                         )
                     )
+
     return records
 
 
