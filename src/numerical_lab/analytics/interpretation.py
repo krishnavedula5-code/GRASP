@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 from numerical_lab.analytics.audit_consistency import audit_consistency
+from numerical_lab.analytics.solver_selection import build_solver_selection_recommendation
 from numerical_lab.analytics.interpretation_confidence import (
     build_method_interpretation_confidence,
 )
@@ -40,116 +41,108 @@ def _root_coverage_interpretation(
     analytics: Dict[str, Any],
     failure_analysis: Dict[str, Any],
 ) -> Dict[str, Any]:
-    expected_root_count = _safe_get(
-        expectations, "analytic_checks", "root_candidate_count", default=0
-    )
-
-    sign_change_count = _safe_get(
-        expectations, "analytic_checks", "sign_change_interval_count", default=0
-    )
-
-    raw_sign_change_count = _safe_get(
-        expectations,
-        "analytic_checks",
-        "raw_sign_change_interval_count",
-        default=sign_change_count,
-    )
+    
 
     root_coverage_data = analytics.get("root_coverage_data") or {}
-    methods_summary = root_coverage_data.get("solvers") or {}
+    solvers = root_coverage_data.get("solvers") or {}
 
+    global_behavior = root_coverage_data.get("global_behavior", {}) or {}
+    benchmark_eval = root_coverage_data.get("benchmark_evaluation", {}) or {}
+
+    known_root_count = int(benchmark_eval.get("known_root_count", 0))
+    in_domain_global = int(global_behavior.get("in_domain_detected_root_count", 0))
+    out_domain_global = int(global_behavior.get("out_of_domain_detected_root_count", 0))
+
+    summary_lines: List[str] = []
     per_method: Dict[str, Any] = {}
-    comparison_notes: List[str] = []
 
-    for method, info in methods_summary.items():
-        discovered = int(info.get("roots_found", 0))
-        coverage_ratio = info.get("coverage", None)
+    # -----------------------------
+    # Global interpretation
+    # -----------------------------
+    if known_root_count > 0:
+        summary_lines.append(
+            f"Benchmark defines {known_root_count} known root(s), while {in_domain_global} in-domain root(s) were detected."
+        )
 
-        if method in OPEN_METHODS:
-            if expected_root_count > 0:
-                if discovered >= expected_root_count:
-                    per_method[method] = _classify_match(
-                        expected=f"Open method could plausibly access about {expected_root_count} root candidate region(s).",
-                        observed=f"{method} discovered {discovered} root(s), coverage={coverage_ratio}.",
-                        status="matched",
-                    )
-                else:
-                    per_method[method] = _classify_match(
-                        expected=f"Open method could plausibly access about {expected_root_count} root candidate region(s).",
-                        observed=f"{method} discovered only {discovered} root(s), coverage={coverage_ratio}.",
-                        status="partial",
-                    )
-            else:
-                per_method[method] = _classify_match(
-                    expected="Open-method root coverage was analytically unclear.",
-                    observed=f"{method} discovered {discovered} root(s), coverage={coverage_ratio}.",
-                    status="observed_only",
-                )
+    if out_domain_global > 0:
+        summary_lines.append(
+            f"{out_domain_global} additional out-of-domain root(s) were detected, indicating solver excursions beyond the benchmark domain."
+        )
 
-        elif method in BRACKET_METHODS:
-            if expected_root_count > sign_change_count:
-                if discovered <= sign_change_count:
-                    per_method[method] = _classify_match(
-                        expected=(
-                            f"Bracket method was expected to access at most about {sign_change_count} sign-change-accessible root region(s) "
-                            f"(raw sampled detection found {raw_sign_change_count}), "
-                            f"with possible undercoverage relative to {expected_root_count} total root candidates."
-                        ),
-                        observed=f"{method} discovered {discovered} root(s), coverage={coverage_ratio}.",
-                        status="matched",
-                    )
-                else:
-                    per_method[method] = _classify_match(
-                        expected=(
-                            f"Bracket method was expected to be limited by {sign_change_count} sign-change interval(s) "
-                            f"(raw sampled detection found {raw_sign_change_count})."
-                        ),
-                        observed=f"{method} discovered {discovered} root(s), exceeding the expected sign-change-limited count.",
-                        status="unexpected",
-                    )
-            else:
-                per_method[method] = _classify_match(
-                    expected=(
-                        f"Bracket method had about {sign_change_count} sign-change interval(s) available "
-                        f"(raw sampled detection found {raw_sign_change_count})."
-                    ),
-                    observed=f"{method} discovered {discovered} root(s), coverage={coverage_ratio}.",
-                    status="matched" if discovered <= max(sign_change_count, 1) else "unexpected",
-                )
+    # -----------------------------
+    # Per-method interpretation
+    # -----------------------------
+    for method, payload in solvers.items():
+        true_behavior = payload.get("true_behavior", {}) or {}
+        bench = payload.get("benchmark_evaluation", {}) or {}
 
+        all_count = int(true_behavior.get("all_detected_root_count", 0))
+        in_count = int(true_behavior.get("in_domain_detected_root_count", 0))
+        out_count = int(true_behavior.get("out_of_domain_detected_root_count", 0))
+        faith = float(true_behavior.get("domain_faithfulness", 0.0))
+        excursion = bool(true_behavior.get("excursion_detected", False))
+
+        coverage = bench.get("benchmark_coverage", None)
+        matched = bench.get("benchmark_matched_count", None)
+
+        # classification
+        if excursion and faith < 0.8:
+            status = "excursion_prone"
+        elif not excursion and abs(faith - 1.0) < 1e-12:
+            status = "domain_faithful"
         else:
-            per_method[method] = _classify_match(
-                expected="No method-family-specific coverage expectation was available.",
-                observed=f"{method} discovered {discovered} root(s), coverage={coverage_ratio}.",
-                status="observed_only",
-            )
+            status = "mixed"
 
-    open_successes = []
-    bracket_successes = []
-
-    for method, item in per_method.items():
-        if method in OPEN_METHODS and item["status"] == "matched":
-            open_successes.append(method)
-        if method in BRACKET_METHODS and item["status"] == "matched":
-            bracket_successes.append(method)
-
-    if open_successes:
-        comparison_notes.append(
-            f"Open methods {', '.join(sorted(open_successes))} behaved consistently with the analytic expectation that they can access more than just sign-change-isolated roots."
-        )
-
-    if bracket_successes and expected_root_count > sign_change_count:
-        comparison_notes.append(
-            f"Bracket-family methods {', '.join(sorted(bracket_successes))} behaved consistently with the structural sign-change limitation inferred from the problem definition."
-        )
+        per_method[method] = {
+            "status": status,
+            "message": (
+                f"{method}: total roots={all_count}, "
+                f"in-domain={in_count}, out-of-domain={out_count}, "
+                f"domain faithfulness={faith:.3f}"
+                + (f", benchmark coverage={coverage:.3f}" if coverage is not None else "")
+                + (f", matched={matched}/{known_root_count}" if matched is not None else "")
+            ),
+            "true_behavior": true_behavior,
+            "benchmark_evaluation": bench,
+        }
 
     return {
-        "expected_root_candidate_count": expected_root_count,
-        "expected_sign_change_interval_count": sign_change_count,
-        "raw_sign_change_interval_count": raw_sign_change_count,
+        "global_summary": summary_lines,
         "per_method": per_method,
-        "comparison_notes": comparison_notes,
     }
+
+def _method_family_behavior_summary(root_cov: Dict[str, Any]) -> List[str]:
+    solvers = root_cov.get("per_method", {}) or {}
+
+    domain_faithful = []
+    excursion_prone = []
+
+    for method, info in solvers.items():
+        status = info.get("status")
+
+        if status == "domain_faithful":
+            domain_faithful.append(method)
+        elif status == "excursion_prone":
+            excursion_prone.append(method)
+
+    notes: List[str] = []
+
+    if domain_faithful:
+        notes.append(
+            "Domain-faithful methods: " + ", ".join(sorted(domain_faithful)) + "."
+        )
+
+    if excursion_prone:
+        notes.append(
+            "Excursion-prone methods: " + ", ".join(sorted(excursion_prone)) + "."
+        )
+
+    if domain_faithful and excursion_prone:
+        notes.append(
+            "This experiment clearly separates bracket-style domain-constrained behavior from open-method nonlocal exploration."
+        )
+
+    return notes
 
 
 def _failure_interpretation(
@@ -422,6 +415,8 @@ def build_interpretation_summary(
         analytics=analytics,
         failure_analysis=failure_analysis,
     )
+    root_global = root_cov.get("global_summary", [])
+    family_notes = _method_family_behavior_summary(root_cov)
 
     failure_interp = _failure_interpretation(
         expectations=expectations,
@@ -547,6 +542,10 @@ def build_interpretation_summary(
 
     comparison_notes = comparison.get("notes") or []
     top_summary.extend(comparison_notes[:3])
+    # Add root coverage global interpretation
+    top_summary.extend(root_global[:2])
+    # Add method-family behavior insight
+    top_summary.extend(family_notes[:2])
 
     # ---------------------------------------------------------
     # Audit layer integration
@@ -593,6 +592,21 @@ def build_interpretation_summary(
         top_summary.append(f"Consistency audit status: WARNING. {audit_summary}")
     else:
         top_summary.append(f"Consistency audit status: SUSPICIOUS. {audit_summary}")
+    
+    methods_used = metadata.get("methods_used") or metadata.get("methods_requested") or []
+    solver_selection = build_solver_selection_recommendation(
+        expectations=expectations,
+        methods=methods_used,
+        metadata=metadata,
+        analytics=analytics,
+        audit=audit_data,
+    )
+
+    if solver_selection.get("primary_recommendation"):
+        top_summary.append(
+            f"Reliability-aware solver ranking recommends {solver_selection['primary_recommendation']} as the primary method"
+            f" with {solver_selection.get('recommendation_confidence_band', 'unknown')} confidence."
+        )
 
     return {
         "problem_type": problem_type,
@@ -607,6 +621,7 @@ def build_interpretation_summary(
         "root_basin_statistics_interpretation": basin_interp,
         "comparison_interpretation": comparison,
         "audit_consistency": audit_data,
+        "solver_selection_recommendation": solver_selection,
     }
 
 

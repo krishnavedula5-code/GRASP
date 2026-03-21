@@ -20,6 +20,13 @@ def _safe_get(d: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     return cur
 
 
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
 def _get_newton_risk(expectations: Dict[str, Any]) -> Dict[str, Any]:
     data = _safe_get(expectations, "analytic_checks", "newton_pathology", default={})
     return data if isinstance(data, dict) else {}
@@ -113,14 +120,13 @@ def _score_newton(features: Dict[str, Any]) -> Dict[str, Any]:
     if not derivative_available:
         return {
             "method": "newton",
-            "score": 0.0,
+            "analytic_score": 0.0,
             "recommended": False,
             "reasons_for": reasons_for,
             "reasons_against": ["Derivative information is unavailable, so plain Newton is not usable."],
         }
 
     score = 0.50
-
     band_score = _band_to_score(risk_band)
     score = 0.45 * score + 0.55 * band_score
 
@@ -152,7 +158,7 @@ def _score_newton(features: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "method": "newton",
-        "score": score,
+        "analytic_score": score,
         "recommended": score >= 0.60,
         "reasons_for": reasons_for,
         "reasons_against": reasons_against,
@@ -192,7 +198,7 @@ def _score_secant(features: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "method": "secant",
-        "score": score,
+        "analytic_score": score,
         "recommended": score >= 0.60,
         "reasons_for": reasons_for,
         "reasons_against": reasons_against,
@@ -229,7 +235,7 @@ def _score_bisection(features: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "method": "bisection",
-        "score": score,
+        "analytic_score": score,
         "recommended": score >= 0.60,
         "reasons_for": reasons_for,
         "reasons_against": reasons_against,
@@ -265,7 +271,7 @@ def _score_brent(features: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "method": "brent",
-        "score": score,
+        "analytic_score": score,
         "recommended": score >= 0.60,
         "reasons_for": reasons_for,
         "reasons_against": reasons_against,
@@ -307,7 +313,7 @@ def _score_hybrid(features: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "method": "hybrid",
-        "score": score,
+        "analytic_score": score,
         "recommended": score >= 0.60,
         "reasons_for": reasons_for,
         "reasons_against": reasons_against,
@@ -325,14 +331,13 @@ def _score_safeguarded_newton(features: Dict[str, Any]) -> Dict[str, Any]:
     if not derivative_available:
         return {
             "method": "safeguarded_newton",
-            "score": 0.0,
+            "analytic_score": 0.0,
             "recommended": False,
             "reasons_for": reasons_for,
             "reasons_against": ["Derivative information is unavailable, so safeguarded Newton is not usable."],
         }
 
     score = 0.60
-
     reasons_for.append("Derivative information is available for Newton-style local acceleration.")
 
     if sign_change_count > 0:
@@ -355,7 +360,7 @@ def _score_safeguarded_newton(features: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "method": "safeguarded_newton",
-        "score": score,
+        "analytic_score": score,
         "recommended": score >= 0.60,
         "reasons_for": reasons_for,
         "reasons_against": reasons_against,
@@ -380,11 +385,104 @@ def _score_method(method: str, features: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "method": m,
-        "score": 0.30,
+        "analytic_score": 0.30,
         "recommended": False,
         "reasons_for": [],
         "reasons_against": ["No rule-based suitability model is defined for this method yet."],
     }
+
+
+def _build_observed_metrics(analytics: Dict[str, Any], audit: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    comparison_rows = (analytics.get("comparison_summary_data") or {}).get("methods", []) or []
+    comparison_map = {
+        _normalize_method_name(row.get("method")): row
+        for row in comparison_rows
+        if row.get("method") is not None
+    }
+
+    root_cov = (analytics.get("root_coverage_data") or {}).get("solvers", {}) or {}
+
+    audit_issues = audit.get("issues", []) or []
+
+    audit_penalties: Dict[str, float] = {}
+    for issue in audit_issues:
+        code = str(issue.get("code", "")).strip().lower()
+        message = str(issue.get("message", "")).strip().lower()
+        sev = str(issue.get("severity", "warning")).strip().lower()
+
+        penalty = 0.0
+        if sev == "warning":
+            penalty = 0.08
+        elif sev == "suspicious":
+            penalty = 0.20
+
+        for method in list(root_cov.keys()) + list(comparison_map.keys()):
+            m = _normalize_method_name(method)
+            if m and m in message:
+                audit_penalties[m] = audit_penalties.get(m, 0.0) + penalty
+
+    out: Dict[str, Dict[str, Any]] = {}
+
+    for method in sorted(set(list(comparison_map.keys()) + list(root_cov.keys()))):
+        comp = comparison_map.get(method, {}) or {}
+        rc = root_cov.get(method, {}) or {}
+        true_behavior = rc.get("true_behavior", {}) or {}
+        bench = rc.get("benchmark_evaluation", {}) or {}
+
+        success_rate = _safe_float(comp.get("success_rate"), default=0.0)
+        mean_iter = _safe_float(comp.get("mean_iter"), default=0.0)
+        failure_count = int(_safe_float(comp.get("failure_count"), default=0.0))
+
+        benchmark_coverage = bench.get("benchmark_coverage", None)
+        if benchmark_coverage is None:
+            benchmark_coverage = 0.0
+        benchmark_coverage = _safe_float(benchmark_coverage, default=0.0)
+
+        domain_faithfulness = _safe_float(true_behavior.get("domain_faithfulness"), default=0.0)
+        excursion_detected = bool(true_behavior.get("excursion_detected", False))
+        out_of_domain_count = int(_safe_float(true_behavior.get("out_of_domain_detected_root_count"), default=0.0))
+
+        iter_score = 0.0
+        if mean_iter > 0:
+            iter_score = 1.0 / (1.0 + mean_iter / 10.0)
+
+        excursion_penalty = 0.0
+        if excursion_detected:
+            excursion_penalty = min(0.35, 0.05 * out_of_domain_count)
+
+        failure_penalty = 0.0
+        if success_rate < 1.0:
+            failure_penalty = 1.0 - success_rate
+
+        audit_penalty = audit_penalties.get(method, 0.0)
+
+        observed_score = (
+            0.35 * benchmark_coverage
+            + 0.25 * domain_faithfulness
+            + 0.20 * success_rate
+            + 0.20 * iter_score
+            - excursion_penalty
+            - 0.25 * failure_penalty
+            - audit_penalty
+        )
+        observed_score = _clamp(observed_score)
+
+        out[method] = {
+            "success_rate": success_rate,
+            "mean_iter": mean_iter,
+            "failure_count": failure_count,
+            "benchmark_coverage": benchmark_coverage,
+            "domain_faithfulness": domain_faithfulness,
+            "excursion_detected": excursion_detected,
+            "out_of_domain_count": out_of_domain_count,
+            "iter_score": iter_score,
+            "excursion_penalty": excursion_penalty,
+            "failure_penalty": failure_penalty,
+            "audit_penalty": audit_penalty,
+            "observed_score": observed_score,
+        }
+
+    return out
 
 
 def build_solver_selection_recommendation(
@@ -392,14 +490,71 @@ def build_solver_selection_recommendation(
     expectations: Dict[str, Any],
     methods: Sequence[str],
     metadata: Dict[str, Any] | None = None,
+    analytics: Dict[str, Any] | None = None,
+    audit: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    features = _build_base_problem_features(expectations, metadata=metadata)
+    metadata = metadata or {}
+    analytics = analytics or {}
+    audit = audit or {}
 
-    scored_methods = [
-        _score_method(method, features)
-        for method in methods
-    ]
-    scored_methods.sort(key=lambda item: item.get("score", 0.0), reverse=True)
+    features = _build_base_problem_features(expectations, metadata=metadata)
+    observed_metrics = _build_observed_metrics(analytics, audit)
+
+    scored_methods = []
+    for method in methods:
+        analytic = _score_method(method, features)
+        m = _normalize_method_name(method)
+        observed = observed_metrics.get(m, {})
+
+        analytic_score = _safe_float(analytic.get("analytic_score"), default=0.0)
+        observed_score = _safe_float(observed.get("observed_score"), default=0.0)
+
+        has_observed = bool(observed)
+        overall_score = (
+            0.40 * analytic_score + 0.60 * observed_score
+            if has_observed
+            else analytic_score
+        )
+        overall_score = _clamp(overall_score)
+
+        strengths = []
+        weaknesses = []
+
+        if _safe_float(observed.get("benchmark_coverage"), default=0.0) >= 0.99:
+            strengths.append("full benchmark coverage")
+        if _safe_float(observed.get("domain_faithfulness"), default=0.0) >= 0.99:
+            strengths.append("domain-faithful")
+        if _safe_float(observed.get("success_rate"), default=0.0) >= 0.99:
+            strengths.append("near-perfect observed success")
+        if _safe_float(observed.get("mean_iter"), default=999.0) <= 5.0:
+            strengths.append("low iteration cost")
+
+        if bool(observed.get("excursion_detected", False)):
+            weaknesses.append("out-of-domain excursions observed")
+        if _safe_float(observed.get("success_rate"), default=1.0) < 0.95:
+            weaknesses.append("nontrivial observed failure rate")
+        if _safe_float(observed.get("audit_penalty"), default=0.0) > 0:
+            weaknesses.append("audit warnings affect trustworthiness")
+
+        scored_methods.append(
+            {
+                "method": m,
+                "analytic_score": round(analytic_score, 6),
+                "observed_score": round(observed_score, 6) if has_observed else None,
+                "overall_score": round(overall_score, 6),
+                "recommended": overall_score >= 0.60,
+                "reasons_for": analytic.get("reasons_for", []),
+                "reasons_against": analytic.get("reasons_against", []),
+                "strengths": strengths,
+                "weaknesses": weaknesses,
+                "observed_metrics": observed,
+            }
+        )
+
+    scored_methods.sort(key=lambda item: item.get("overall_score", 0.0), reverse=True)
+
+    for i, item in enumerate(scored_methods, start=1):
+        item["rank"] = i
 
     primary = scored_methods[0] if scored_methods else None
     secondary = scored_methods[1] if len(scored_methods) > 1 else None
@@ -407,31 +562,33 @@ def build_solver_selection_recommendation(
     avoid = [
         item["method"]
         for item in scored_methods
-        if float(item.get("score", 0.0)) < 0.40
+        if float(item.get("overall_score", 0.0)) < 0.40
     ]
 
     recommendation_confidence_score = 0.0
     if primary is not None:
-        top_score = float(primary.get("score", 0.0))
-        second_score = float(secondary.get("score", 0.0)) if secondary is not None else 0.0
+        top_score = float(primary.get("overall_score", 0.0))
+        second_score = float(secondary.get("overall_score", 0.0)) if secondary is not None else 0.0
         separation = max(0.0, top_score - second_score)
         recommendation_confidence_score = _clamp(0.70 * top_score + 0.30 * separation)
 
     rationale: List[str] = []
     if primary is not None:
         rationale.append(
-            f"Primary recommendation is {primary['method']} with suitability score {primary['score']:.4f}."
+            f"Primary recommendation is {primary['method']} with overall score {primary['overall_score']:.4f}."
         )
-        for reason in primary.get("reasons_for", [])[:3]:
+        for reason in primary.get("strengths", [])[:3]:
+            rationale.append(f"Strength: {reason}.")
+        for reason in primary.get("reasons_for", [])[:2]:
             rationale.append(reason)
 
     if secondary is not None:
         rationale.append(
-            f"Secondary recommendation is {secondary['method']} with suitability score {secondary['score']:.4f}."
+            f"Secondary recommendation is {secondary['method']} with overall score {secondary['overall_score']:.4f}."
         )
 
     if avoid:
-        rationale.append(f"Methods to avoid or deprioritize under current analytic checks: {', '.join(avoid)}.")
+        rationale.append(f"Methods to avoid or deprioritize under current evidence: {', '.join(avoid)}.")
 
     return {
         "problem_features": features,
@@ -439,7 +596,7 @@ def build_solver_selection_recommendation(
         "primary_recommendation": primary["method"] if primary else None,
         "secondary_recommendation": secondary["method"] if secondary else None,
         "avoid": avoid,
-        "recommendation_confidence_score": recommendation_confidence_score,
+        "recommendation_confidence_score": round(recommendation_confidence_score, 6),
         "recommendation_confidence_band": _recommendation_confidence_band(recommendation_confidence_score),
         "rationale": rationale,
     }

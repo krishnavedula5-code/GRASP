@@ -58,6 +58,15 @@ const BENCHMARK_DETAILS = {
   },
 };
 
+function formatRoots(arr) {
+  if (!Array.isArray(arr)) return "-";
+  return arr
+    .map((x) => Number.parseFloat(x))
+    .filter((x) => Number.isFinite(x))
+    .map((x) => x.toFixed(3))
+    .join(", ");
+}
+
 function prettyMethod(name) {
   if (!name) return "-";
   return String(name)
@@ -65,12 +74,14 @@ function prettyMethod(name) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function formatNumber(x) {
-  const num = Number(x);
-  if (!Number.isFinite(num)) return "-";
-  if (num === 0) return "0";
-  if (Math.abs(num) < 1e-4) return num.toExponential(2);
-  return Number.isInteger(num) ? String(num) : num.toFixed(4);
+function formatNumber(x, digits = 4) {
+  const v = Number(x);
+  if (!isFinite(v)) return "-";
+
+  // FIX: clean near-zero noise
+  if (Math.abs(v) < 1e-10) return "0.0000";
+
+  return v.toFixed(digits);
 }
 
 function formatRootLabel(root) {
@@ -248,10 +259,6 @@ function DataTable({ columns, rows, emptyText = "No data available." }) {
       </table>
     </div>
   );
-}
-
-function Badge({ children }) {
-  return <span style={styles.badge}>{children}</span>;
 }
 
 function MonteCarloSummaryCards({ rows }) {
@@ -860,6 +867,34 @@ function computeMcRankingScore(row, minIter, maxIter) {
   return success - 0.01 * normalizedIterations;
 }
 
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+
+function normalizeRanking(rawSolverSelection) {
+  const raw =
+    asArray(rawSolverSelection?.ranking).length > 0
+      ? rawSolverSelection.ranking
+      : asArray(rawSolverSelection?.ranked_methods);
+
+  return raw.map((item, index) => ({
+    rank: item?.rank ?? index + 1,
+    method: item?.method || "-",
+    score:
+      Number.isFinite(Number(item?.score))
+        ? Number(item.score)
+        : Number.isFinite(Number(item?.overall_score))
+        ? Number(item.overall_score)
+        : null,
+    recommended: Boolean(item?.recommended),
+    reasons_for: asArray(item?.reasons_for),
+    reasons_against: asArray(item?.reasons_against),
+  }));
+}
+
+
+
 export default function ExperimentsDashboard() {
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState(null);
@@ -942,8 +977,6 @@ export default function ExperimentsDashboard() {
   const [showRootBasinStats, setShowRootBasinStats] = useState(false);
   const [showSolverComparison, setShowSolverComparison] = useState(true);
   const [showPareto, setShowPareto] = useState(true);
-  const [showHistograms, setShowHistograms] = useState(false);
-  const [showCcdfs, setShowCcdfs] = useState(false);
   const [showExportedOutputs, setShowExportedOutputs] = useState(true);
 
   const [showMcOverview, setShowMcOverview] = useState(true);
@@ -975,8 +1008,8 @@ export default function ExperimentsDashboard() {
   }, []);
 
   useEffect(() => {
-  problemIdRef.current = problemId;
-}, [problemId]);
+    problemIdRef.current = problemId;
+  }, [problemId]);
 
   useEffect(() => {
     fetch(`${API}/benchmarks`)
@@ -1258,44 +1291,67 @@ export default function ExperimentsDashboard() {
   }
 
   function buildSweepPayload() {
-  console.log("buildSweepPayload problemId state =", problemId);
-  console.log("buildSweepPayload problemId ref =", problemIdRef.current);
+    console.log("buildSweepPayload problemId state =", problemId);
+    console.log("buildSweepPayload problemId ref =", problemIdRef.current);
 
-  const sMin = Number(scalarMin);
-  const sMax = Number(scalarMax);
-  const bMin = Number(bracketMin);
-  const bMax = Number(bracketMax);
+    const sMin = Number(scalarMin);
+    const sMax = Number(scalarMax);
+    const bMin = Number(bracketMin);
+    const bMax = Number(bracketMax);
 
-  const base = {
-    methods: selectedMethods,
-    sampling_mode: samplingMode,
-    tol: Number(tol),
-    max_iter: Number(maxIter),
-    boundary_method: boundaryMethod,
-    numerical_derivative: numericalDerivative,
-    scalar_range: {
-      x_min: sMin,
-      x_max: sMax,
-    },
-    bracket_search_range: {
-      x_min: bMin,
-      x_max: bMax,
-    },
-  };
+    const base = {
+      methods: selectedMethods,
+      sampling_mode: samplingMode,
+      tol: Number(tol),
+      max_iter: Number(maxIter),
+      boundary_method: boundaryMethod,
+      numerical_derivative: numericalDerivative,
+      scalar_range: {
+        x_min: sMin,
+        x_max: sMax,
+      },
+      bracket_search_range: {
+        x_min: bMin,
+        x_max: bMax,
+      },
+    };
 
-  if (problemMode === "custom") {
+    if (problemMode === "custom") {
+      const payload = {
+        ...base,
+        problem_mode: "custom",
+        problem_id: null,
+        expr: String(expr || "").trim(),
+        dexpr: String(dexpr || "").trim(),
+      };
+
+      if (samplingMode === "grid") {
+        payload.n_points = Number(nPoints);
+        payload.x_min = sMin;
+        payload.x_max = sMax;
+      } else {
+        payload.n_samples = Number(nSamples);
+        payload.random_seed = Number(randomSeed);
+      }
+
+      if (samplingMode === "gaussian") {
+        payload.gaussian_mean = Number(gaussianMean);
+        payload.gaussian_std = Number(gaussianStd);
+      }
+
+      return payload;
+    }
+
     const payload = {
       ...base,
-      problem_mode: "custom",
-      problem_id: null,
-      expr: String(expr || "").trim(),
-      dexpr: String(dexpr || "").trim(),
+      problem_mode: "benchmark",
+      problem_id: problemIdRef.current,
+      x_min: sMin,
+      x_max: sMax,
     };
 
     if (samplingMode === "grid") {
       payload.n_points = Number(nPoints);
-      payload.x_min = sMin;
-      payload.x_max = sMax;
     } else {
       payload.n_samples = Number(nSamples);
       payload.random_seed = Number(randomSeed);
@@ -1306,69 +1362,46 @@ export default function ExperimentsDashboard() {
       payload.gaussian_std = Number(gaussianStd);
     }
 
+    console.log("SWEEP PAYLOAD =", payload);
     return payload;
   }
 
-  const payload = {
-    ...base,
-    problem_mode: "benchmark",
-    problem_id: problemIdRef.current,
-    x_min: sMin,
-    x_max: sMax,
-  };
+  function buildMonteCarloPayload() {
+    const payload = {
+      problem_mode: problemMode,
+      problem_id: problemMode === "benchmark" ? problemIdRef.current : null,
+      methods: selectedMethods,
+      gaussian_mean: Number(gaussianMean),
+      gaussian_std: Number(gaussianStd),
+      distribution: mcConfig.distributionType,
+      n_samples: Number(mcConfig.nSamples),
+      random_seed: Number(mcConfig.randomSeed),
+      tol: Number(mcConfig.tol),
+      max_iter: Number(mcConfig.maxIter),
+      derivative_mode: mcConfig.derivativeMode,
+      cluster_tol: Number(mcConfig.clusterTol),
+    };
 
-  if (samplingMode === "grid") {
-    payload.n_points = Number(nPoints);
-  } else {
-    payload.n_samples = Number(nSamples);
-    payload.random_seed = Number(randomSeed);
+    if (problemMode === "custom") {
+      payload.expr = String(expr || "").trim();
+      payload.dexpr = String(dexpr || "").trim();
+    }
+
+    if (mcConfig.distributionType === "uniform") {
+      payload.x_min = Number(mcConfig.a);
+      payload.x_max = Number(mcConfig.b);
+    }
+
+    if (mcConfig.distributionType === "gaussian") {
+      payload.mean = Number(mcConfig.mean);
+      payload.std = Number(mcConfig.std);
+      payload.x_min = Number(scalarMin);
+      payload.x_max = Number(scalarMax);
+    }
+
+    console.log("MONTE CARLO PAYLOAD =", payload);
+    return payload;
   }
-
-  if (samplingMode === "gaussian") {
-    payload.gaussian_mean = Number(gaussianMean);
-    payload.gaussian_std = Number(gaussianStd);
-  }
-
-  console.log("SWEEP PAYLOAD =", payload);
-  return payload;
-}
-
-function buildMonteCarloPayload() {
-  const payload = {
-    problem_mode: problemMode,
-    problem_id: problemMode === "benchmark" ? problemIdRef.current : null,
-    methods: selectedMethods,
-    gaussian_mean: Number(gaussianMean),
-    gaussian_std: Number(gaussianStd),
-    distribution: mcConfig.distributionType,
-    n_samples: Number(mcConfig.nSamples),
-    random_seed: Number(mcConfig.randomSeed),
-    tol: Number(mcConfig.tol),
-    max_iter: Number(mcConfig.maxIter),
-    derivative_mode: mcConfig.derivativeMode,
-    cluster_tol: Number(mcConfig.clusterTol),
-  };
-
-  if (problemMode === "custom") {
-    payload.expr = String(expr || "").trim();
-    payload.dexpr = String(dexpr || "").trim();
-  }
-
-  if (mcConfig.distributionType === "uniform") {
-    payload.x_min = Number(mcConfig.a);
-    payload.x_max = Number(mcConfig.b);
-  }
-
-  if (mcConfig.distributionType === "gaussian") {
-    payload.mean = Number(mcConfig.mean);
-    payload.std = Number(mcConfig.std);
-    payload.x_min = Number(scalarMin);
-    payload.x_max = Number(scalarMax);
-  }
-
-  console.log("MONTE CARLO PAYLOAD =", payload);
-  return payload;
-}
 
   async function runExperiment() {
     try {
@@ -1387,7 +1420,7 @@ function buildMonteCarloPayload() {
       } else {
         validateSweepInputs();
       }
-      
+
       console.log("experimentType =", experimentType);
       console.log("problemMode =", problemMode);
       console.log("problemId state before submit =", problemId);
@@ -1512,7 +1545,11 @@ function buildMonteCarloPayload() {
     result?.artifacts?.analytics?.custom ||
     null;
 
-  const problemExpectations = analytics?.problem_expectations_data || null;
+  const problemExpectations =
+    analytics?.problem_expectations_data ||
+    analytics?.problem_expectations ||
+    null;
+
   const interpretationSummary = analytics?.interpretation_summary_data || null;
 
   const basinMapUrl =
@@ -1522,13 +1559,13 @@ function buildMonteCarloPayload() {
     toOutputUrl(analytics?.basin_entropy_plot) ||
     toOutputUrl(analytics?.basin_entropy_comparison_plot);
 
-  const comparisonRows = analytics?.comparison_summary_data?.methods || [];
-  const entropyRows = analytics?.basin_entropy_data?.methods || [];
+  const comparisonRows = asArray(analytics?.comparison_summary_data?.methods);
+  const entropyRows = asArray(analytics?.basin_entropy_data?.methods);
   const clusterTol = analytics?.basin_entropy_data?.cluster_tol;
 
   const paretoMeanUrl = toOutputUrl(analytics?.pareto?.mean_vs_failure);
   const paretoMedianUrl = toOutputUrl(analytics?.pareto?.median_vs_failure);
-  
+
   const rootCoverageData = analytics?.root_coverage_data || null;
   const rootCoveragePlot = analytics?.root_coverage_plot || null;
 
@@ -1543,13 +1580,7 @@ function buildMonteCarloPayload() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analytics]);
 
-  const rootDistributionEntries = useMemo(() => {
-    return Object.entries(analytics?.basin_root_distribution || {}).map(([k, v]) => [
-      k,
-      toOutputUrl(v),
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics]);
+
 
   const initializationHistogramEntries = useMemo(() => {
     return Object.entries(analytics?.initialization_histogram || {}).map(([k, v]) => [
@@ -1575,21 +1606,6 @@ function buildMonteCarloPayload() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analytics]);
 
-  const histogramEntries = useMemo(() => {
-    return Object.entries(analytics?.histogram || {}).map(([k, v]) => [
-      k,
-      toOutputUrl(v),
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics]);
-
-  const ccdfEntries = useMemo(() => {
-    return Object.entries(analytics?.ccdf || {}).map(([k, v]) => [
-      k,
-      toOutputUrl(v),
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics]);
 
   const failureRegionEntries = useMemo(() => {
     return Object.entries(analytics?.failure_region || {}).map(([k, v]) => [
@@ -1599,19 +1615,36 @@ function buildMonteCarloPayload() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analytics]);
 
-  const detectedRoots = Array.from(
-    new Set(
-      (entropyRows || []).flatMap((row) =>
-        row?.basin_counts ? Object.keys(row.basin_counts) : []
+const detectedRootsRaw =
+  problemMode === "benchmark"
+    ? (
+        (Array.isArray(benchmarkInfo?.known_roots) && benchmarkInfo.known_roots.length > 0
+          ? benchmarkInfo.known_roots
+          : Array.isArray(benchmarkInfo?.roots) && benchmarkInfo.roots.length > 0
+          ? benchmarkInfo.roots
+          : Array.isArray(result?.known_roots) && result.known_roots.length > 0
+          ? result.known_roots
+          : [])
       )
-    )
-  ).sort((a, b) => Number(a) - Number(b));
+    : (
+        (Array.isArray(result?.known_roots) && result.known_roots.length > 0
+          ? result.known_roots
+          : Array.isArray(rootCoverageData?.global_roots) && rootCoverageData.global_roots.length > 0
+          ? rootCoverageData.global_roots
+          : [])
+      );
+
+const detectedRoots = [...new Set(
+  asArray(detectedRootsRaw)
+    .map((r) => Number.parseFloat(r))
+    .filter((r) => Number.isFinite(r))
+    .map((r) => r.toFixed(3))
+)];
 
   const boundaryRegions = Array.isArray(result?.boundaries) ? result.boundaries : [];
   const rawBoundaries = Array.isArray(result?.raw_boundaries) ? result.raw_boundaries : [];
   const boundarySummary = result?.boundary_summary || null;
-  const boundaryClusterTol = result?.boundary_cluster_tol;
-
+  
   const bestSuccessMethod =
     comparisonRows.length > 0
       ? [...comparisonRows].sort(
@@ -1702,34 +1735,6 @@ function buildMonteCarloPayload() {
     return insights;
   }
 
-  function suggestSolverChoice() {
-    if (!comparisonRows.length) {
-      return "No solver recommendation available.";
-    }
-
-    const reliable = bestSuccessMethod?.method;
-    const fastest = fastestMedianMethod?.method;
-    const stable = mostStableMethod?.method;
-
-    if (reliable && reliable === fastest) {
-      return `${prettyMethod(
-        reliable
-      )} provides the best overall performance here because it combines the highest success rate with the fastest convergence.`;
-    }
-
-    if (reliable && reliable === stable) {
-      return `${prettyMethod(
-        reliable
-      )} provides the strongest reliability profile with the lowest observed failure risk.`;
-    }
-
-    return `${prettyMethod(
-      reliable
-    )} is the most reliable solver here, while ${prettyMethod(
-      fastest
-    )} is the fastest. Choose based on whether robustness or speed matters more for this problem.`;
-  }
-
   const effectiveSamplingMode = result?.sampling_mode || samplingMode;
   const effectiveSampleCount =
     effectiveSamplingMode === "grid"
@@ -1746,10 +1751,45 @@ function buildMonteCarloPayload() {
     ? "(numerical derivative)"
     : result?.dexpr || (problemMode === "benchmark" ? benchmarkInfo?.dexpr : dexpr) || "-";
 
+  const solverKey =
+    result?.problem_id || (problemMode === "benchmark" ? problemIdRef.current : "custom");
+
+  const solverSelection =
+    analytics?.solver_selection_recommendation ||
+    result?.artifacts?.analytics?.[solverKey]?.solver_selection_recommendation ||
+    null;
+
+  const rankedMethods = normalizeRanking(solverSelection);
+
+  const primaryRecommendation = solverSelection?.primary_recommendation || null;
+  const secondaryRecommendation = solverSelection?.secondary_recommendation || null;
+  const recommendationConfidence =
+    solverSelection?.recommendation_confidence_band || "unknown";
+
+  const recommendationRationale =
+    asArray(solverSelection?.rationale).length > 0
+      ? asArray(solverSelection?.rationale)
+      : asArray(rankedMethods.find((row) => row.method === primaryRecommendation)?.reasons_for);
+
+  const primaryReasonsAgainst =
+    asArray(rankedMethods.find((row) => row.method === primaryRecommendation)?.reasons_against);
+
+  const executedMethods =
+    asArray(result?.methods).length > 0
+      ? result.methods
+      : asArray(result?.methods_used).length > 0
+      ? result.methods_used
+      : selectedMethods;
+
   const overviewRangeMin =
     result?.scalar_range?.[0] ?? result?.scalar_range?.x_min ?? scalarMin;
   const overviewRangeMax =
     result?.scalar_range?.[1] ?? result?.scalar_range?.x_max ?? scalarMax;
+
+  const expectationSource =
+    problemExpectations?.analytic_checks && typeof problemExpectations.analytic_checks === "object"
+      ? problemExpectations.analytic_checks
+      : problemExpectations || {};
 
   const overviewItems = [
     { label: "Problem Mode", value: result?.problem_mode || problemMode },
@@ -1773,7 +1813,7 @@ function buildMonteCarloPayload() {
       value: effectiveNumericalDerivative ? "Numerical" : "Analytic",
     },
     { label: "Boundary Method", value: prettyMethod(boundaryMethod) },
-    { label: "Methods", value: selectedMethods.map(prettyMethod).join(", ") },
+    { label: "Methods", value: executedMethods.map(prettyMethod).join(", ") },
     { label: "Sweep Folder", value: result?.latest_sweep_dir || "-" },
     {
       label: "Boundary Regions",
@@ -1783,27 +1823,27 @@ function buildMonteCarloPayload() {
     },
   ];
 
-function normalizeMonteCarloRows(data) {
-  const candidate =
-    data?.methods ??
-    data?.summary ??
-    data?.solvers ??
-    data?.method_summaries ??
-    [];
+  function normalizeMonteCarloRows(data) {
+    const candidate =
+      data?.methods ??
+      data?.summary ??
+      data?.solvers ??
+      data?.method_summaries ??
+      [];
 
-  if (Array.isArray(candidate)) {
-    return candidate;
+    if (Array.isArray(candidate)) {
+      return candidate;
+    }
+
+    if (candidate && typeof candidate === "object") {
+      return Object.entries(candidate).map(([method, info]) => ({
+        method,
+        ...(info || {}),
+      }));
+    }
+
+    return [];
   }
-
-  if (candidate && typeof candidate === "object") {
-    return Object.entries(candidate).map(([method, info]) => ({
-      method,
-      ...(info || {}),
-    }));
-  }
-
-  return [];
-}
 
   const mcMethodRows = normalizeMonteCarloRows(mcSummaryData);
   const mcMeanIterationValues = mcMethodRows
@@ -1852,7 +1892,9 @@ function normalizeMonteCarloRows(data) {
     },
     {
       label: "Methods",
-      value: (result?.methods || selectedMethods).map(prettyMethod).join(", "),
+      value: (asArray(result?.methods).length > 0 ? result.methods : selectedMethods)
+        .map(prettyMethod)
+        .join(", "),
     },
     {
       label: "Output Folder",
@@ -2431,6 +2473,7 @@ function normalizeMonteCarloRows(data) {
             ) : null}
           </div>
         ) : null}
+
         <BackendWarmupPanel
           backendStatus={backendStatus}
           statusMessage={statusMessage}
@@ -2700,9 +2743,96 @@ function normalizeMonteCarloRows(data) {
 
                   <div style={styles.innerPanel}>
                     <div style={styles.innerPanelTitle}>Suggested Solver Choice</div>
-                    <p style={styles.paragraph}>{suggestSolverChoice()}</p>
+
+                    {primaryRecommendation ? (
+                      <>
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={styles.kvLabel}>Primary Recommendation</div>
+                          <div style={styles.kvValue}>{prettyMethod(primaryRecommendation)}</div>
+                        </div>
+
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={styles.kvLabel}>Secondary Recommendation</div>
+                          <div style={styles.kvValue}>
+                            {secondaryRecommendation ? prettyMethod(secondaryRecommendation) : "-"}
+                          </div>
+                        </div>
+
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={styles.kvLabel}>Confidence</div>
+                          <div style={styles.kvValue}>{recommendationConfidence}</div>
+                        </div>
+
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={styles.kvLabel}>Why this solver?</div>
+                          <BulletList
+                            items={recommendationRationale}
+                            emptyText="No recommendation rationale available."
+                          />
+                        </div>
+
+                        <div>
+                          <div style={styles.kvLabel}>Why not others?</div>
+                          <BulletList
+                            items={primaryReasonsAgainst}
+                            emptyText="No explicit drawbacks reported."
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <p style={styles.paragraph}>No recommendation available yet.</p>
+                    )}
                   </div>
                 </div>
+
+                {rankedMethods.length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={styles.innerPanel}>
+                      <div style={styles.innerPanelTitle}>Solver Ranking</div>
+
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={styles.table}>
+                          <thead>
+                            <tr>
+                              <th style={styles.th}>Rank</th>
+                              <th style={styles.th}>Method</th>
+                              <th style={styles.th}>Score</th>
+                              <th style={styles.th}>Recommended</th>
+                              <th style={styles.th}>Why this solver</th>
+                              <th style={styles.th}>Why not others</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rankedMethods.slice(0, 3).map((item, idx) => (
+                              <tr key={item.method || idx}>
+                                <td style={styles.td}>{item.rank ?? idx + 1}</td>
+                                <td style={styles.td}>{prettyMethod(item.method)}</td>
+                                <td style={styles.td}>
+                                  {item.score == null ? "-" : formatNumber(item.score)}
+                                </td>
+                                <td style={styles.td}>{item.recommended ? "Yes" : "No"}</td>
+                                <td style={styles.td}>
+                                  {item.reasons_for.length > 0 ? (
+                                    <BulletList items={item.reasons_for} emptyText="-" />
+                                  ) : (
+                                    "-"
+                                  )}
+                                </td>
+                                <td style={styles.td}>
+                                  {item.reasons_against.length > 0 ? (
+                                    <BulletList items={item.reasons_against} emptyText="-" />
+                                  ) : (
+                                    "-"
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </SectionCard>
 
               <SectionCard
@@ -2734,31 +2864,26 @@ function normalizeMonteCarloRows(data) {
                       <InfoGrid
                         items={[
                           {
-                            label: "Root Candidates",
-                            value:
-                              problemExpectations.analytic_checks?.root_candidates
-                                ?.length
-                                ? problemExpectations.analytic_checks.root_candidates.join(
-                                    ", "
-                                  )
-                                : "None detected",
+                            label: "Expected Root Count",
+                            value: formatNumber(
+                              expectationSource?.root_candidate_count ??
+                              expectationSource?.root_candidates?.length ??
+                              "-"
+                            ),
                           },
                           {
                             label: "Sign-Change Accessible Roots",
                             value: String(
-                              problemExpectations.analytic_checks
-                                ?.sign_change_interval_count ?? 0
+                              expectationSource?.sign_change_interval_count ?? "Not available"
                             ),
                           },
                           {
                             label: "Critical Points",
-                            value:
-                              problemExpectations.analytic_checks?.critical_points
-                                ?.length
-                                ? problemExpectations.analytic_checks.critical_points.join(
-                                    ", "
-                                  )
-                                : "None detected",
+                            value: formatNumber(
+                              expectationSource?.critical_point_count ??
+                              expectationSource?.critical_points?.length ??
+                              "-"
+                            ),
                           },
                         ]}
                       />
@@ -2769,13 +2894,22 @@ function normalizeMonteCarloRows(data) {
                 <div style={styles.blockSpacer}>
                   <div style={styles.twoColGrid}>
                     <div style={styles.innerPanel}>
-                      <div style={styles.innerPanelTitle}>Detected Real Roots</div>
-                      <div style={styles.rootText}>
-                        {detectedRoots.length > 0
-                          ? detectedRoots.join(", ")
-                          : "Not available"}
+                      <div style={styles.innerPanelTitle}>Root Validation</div>
+
+                      <div style={styles.inlineInfoText}>
+                        <b>Expected Roots</b> = {formatRoots(benchmarkInfo?.roots)}
+                      </div>
+
+                      <div style={styles.inlineInfoText}>
+                        <b>Observed Roots</b> = {detectedRoots.length > 0 ? detectedRoots.join(", ") : "Not available"}
+                      </div>
+
+                      <div style={styles.inlineInfoText}>
+                        <b>Coverage</b> = {detectedRoots.length} / {asArray(benchmarkInfo?.roots).length}
                       </div>
                     </div>
+
+                   
 
                     <div style={styles.innerPanel}>
                       <div style={styles.innerPanelTitle}>Key Findings</div>
@@ -2783,7 +2917,7 @@ function normalizeMonteCarloRows(data) {
                         items={[
                           {
                             label: "Methods Compared",
-                            value: String(selectedMethods.length),
+                            value: String(executedMethods.length),
                           },
                           {
                             label: "Best Success Rate",
@@ -2835,192 +2969,345 @@ function normalizeMonteCarloRows(data) {
                 onToggle={() => setShowBasinGeometry((v) => !v)}
                 description="Geometry of solver basins, basin transitions, entropy, and root attractor regions."
               >
-                <SubsectionCard
-                  title="Boundary Analysis"
-                  isOpen={showBoundaryAnalysis}
-                  onToggle={() => setShowBoundaryAnalysis((v) => !v)}
-                >
-                  {boundarySummary ? (
-                    <>
-                      <InfoGrid
-                        items={[
-                          {
-                            label: "Clustered Regions",
-                            value: String(boundarySummary.clustered_count ?? "-"),
-                          },
-                          {
-                            label: "Raw Boundary Points",
-                            value: String(boundarySummary.raw_count ?? "-"),
-                          },
-                          {
-                            label: "Leftmost Boundary",
-                            value: formatNumber(boundarySummary.leftmost),
-                          },
-                          {
-                            label: "Rightmost Boundary",
-                            value: formatNumber(boundarySummary.rightmost),
-                          },
-                          {
-                            label: "Median Spacing",
-                            value: formatNumber(boundarySummary.median_spacing),
-                          },
-                          {
-                            label: "Cluster Tolerance",
-                            value: formatNumber(boundaryClusterTol),
-                          },
-                        ]}
-                      />
+                <p style={styles.paragraph}>
+                  This section explains how initial guesses map to converged roots, how sharply
+                  solver behavior changes across the domain, and how structured or chaotic the
+                  basin geometry is.
+                </p>
+<SubsectionCard
+  title="Boundary Analysis"
+  isOpen={showBoundaryAnalysis}
+  onToggle={() => setShowBoundaryAnalysis((v) => !v)}
+>
+  {boundarySummary ? (
+    (() => {
+      const clustered = Number(boundarySummary?.clustered_count || 0);
+      const raw = Number(boundarySummary?.raw_count || 0);
 
-                      <div style={styles.blockSpacer}>
-                        <DataTable
-                          columns={[
-                            { key: "region_id", label: "Region" },
-                            {
-                              key: "center",
-                              label: "Center",
-                              render: (row) => formatNumber(row.center),
-                            },
-                            {
-                              key: "start",
-                              label: "Start",
-                              render: (row) => formatNumber(row.start),
-                            },
-                            {
-                              key: "end",
-                              label: "End",
-                              render: (row) => formatNumber(row.end),
-                            },
-                            {
-                              key: "width",
-                              label: "Width",
-                              render: (row) => formatNumber(row.width),
-                            },
-                            {
-                              key: "count",
-                              label: "Raw Points",
-                              render: (row) => formatNumber(row.count),
-                            },
-                          ]}
-                          rows={boundaryRegions}
-                          emptyText="No clustered boundary regions available."
-                        />
-                      </div>
-                    </>
-                  ) : (
-                    <p style={styles.emptyText}>No boundary summary available.</p>
-                  )}
-                </SubsectionCard>
 
-                <SubsectionCard
-                  title="Basin Map"
-                  isOpen={showBasinMap}
-                  onToggle={() => setShowBasinMap((v) => !v)}
-                >
-                  {basinMapUrl ? (
-                    <>
-                      <div style={styles.singlePlotWrap}>
-                        <PlotTile
-                          title={`Root-Labeled Basin Map — ${analyticsKey} — ${boundaryMethod}`}
-                          url={basinMapUrl}
-                          alt="Basin map"
-                        />
-                      </div>
+      let interpretation = "";
+      let tone = "#6b7280";
+      let background = "#f9fafb";
 
-                      {problemExpectations?.section_expectations?.basin_map?.notes
-                        ?.length > 0 ? (
-                        <div style={styles.blockSpacer}>
-                          <div style={styles.innerPanel}>
-                            <div style={styles.innerPanelTitle}>
-                              Expected Basin Behavior
-                            </div>
-                            <BulletList
-                              items={
-                                problemExpectations.section_expectations.basin_map
-                                  .notes
-                              }
-                            />
-                          </div>
-                        </div>
-                      ) : null}
-                    </>
-                  ) : (
-                    <p style={styles.emptyText}>No basin map available.</p>
-                  )}
-                </SubsectionCard>
+      if (clustered > 0) {
+        interpretation =
+          `Detected ${clustered} clustered boundary region(s). ` +
+          `This indicates well-defined basin transition zones where solver behavior changes sharply. ` +
+          `The problem likely exhibits multiple attractors with structured basin separation.`;
+        tone = "#b45309";
+        background = "#fffbeb";
+      } else if (raw > 0) {
+        interpretation =
+          `No clustered boundary regions detected, but ${raw} raw boundary transition point(s) exist. ` +
+          `This suggests basin transitions are present but not sharply resolved at the current sampling resolution. ` +
+          `Increasing resolution may reveal clearer basin structure.`;
+        tone = "#1d4ed8";
+        background = "#eff6ff";
+} else {
+  interpretation =
+    `No clustered boundary transitions were detected at the current resolution. ` +
+    `Multiple basins may still exist, but their transition structure is not sharply resolved in this sampling. ` +
+    `Higher sampling density may reveal narrower or more fragmented transition regions.`;
+  tone = "#047857";
+  background = "#ecfdf5";
+}
 
-                <SubsectionCard
-                  title="Basin Complexity"
-                  isOpen={showBasinComplexity}
-                  onToggle={() => setShowBasinComplexity((v) => !v)}
-                >
-                  {clusterTol !== undefined && clusterTol !== null ? (
-                    <p style={styles.metaText}>
-                      <b>Cluster tolerance:</b> {formatNumber(clusterTol)} (based
-                      on sweep resolution)
-                    </p>
-                  ) : null}
+      return (
+        <>
+          <div style={styles.kpiGrid}>
+            <div style={styles.kpiCard}>
+              <div style={styles.kpiLabel}>Clustered Regions</div>
+              <div style={styles.kpiValue}>{clustered}</div>
+            </div>
 
-                  {basinEntropyPlotUrl ? (
-                    <div style={styles.singlePlotWrap}>
-                      <PlotTile
-                        title="Basin Entropy Comparison"
-                        url={basinEntropyPlotUrl}
-                        alt="Basin entropy comparison"
-                      />
-                    </div>
-                  ) : (
-                    <p style={styles.emptyText}>
-                      No basin entropy comparison plot available.
-                    </p>
-                  )}
+            <div style={styles.kpiCard}>
+              <div style={styles.kpiLabel}>Raw Boundary Points</div>
+              <div style={styles.kpiValue}>{raw}</div>
+            </div>
 
-                  <div style={styles.blockSpacer}>
-                    <DataTable
-                      columns={[
-                        {
-                          key: "method",
-                          label: "Method",
-                          render: (row) => prettyMethod(row.method),
-                        },
-                        {
-                          key: "entropy",
-                          label: "Entropy",
-                          render: (row) => formatEntropy(row.entropy),
-                        },
-                        {
-                          key: "num_basins",
-                          label: "Basins",
-                          render: (row) => formatNumber(row.num_basins),
-                        },
-                        {
-                          key: "total_converged",
-                          label: "Converged Runs",
-                          render: (row) => formatNumber(row.total_converged),
-                        },
-                        {
-                          key: "cluster_tol",
-                          label: "Cluster Tol",
-                          render: (row) => formatNumber(row.cluster_tol),
-                        },
-                      ]}
-                      rows={entropyRows}
-                      emptyText="No basin entropy metrics available."
-                    />
-                  </div>
-                </SubsectionCard>
+            {boundarySummary?.cluster_tolerance !== undefined && (
+              <div style={styles.kpiCard}>
+                <div style={styles.kpiLabel}>Cluster Tolerance</div>
+                <div style={styles.kpiValue}>
+                  {Number(boundarySummary.cluster_tolerance).toFixed(4)}
+                </div>
+              </div>
+            )}
+          </div>
 
-                <SubsectionCard
-                  title="Basin Distribution Plots"
-                  isOpen={showBasinDistribution}
-                  onToggle={() => setShowBasinDistribution((v) => !v)}
-                >
-                  <PlotGrid
-                    entries={basinDistributionEntries}
-                    prettyMethodFn={prettyMethod}
-                    altPrefix="Basin distribution for"
-                    emptyText="No basin distribution artifacts available."
-                  />
-                </SubsectionCard>
+          <div
+            style={{
+              marginTop: "8px",
+              padding: "10px 12px",
+              borderRadius: "8px",
+              background,
+              border: "1px solid #e5e7eb",
+              color: tone,
+              fontSize: "13px",
+              lineHeight: "1.6",
+            }}
+          >
+            {interpretation}
+          </div>
+        </>
+      );
+    })()
+  ) : (
+    <div style={styles.mutedText}>Boundary summary is not available for this run.</div>
+  )}
+</SubsectionCard>
+<SubsectionCard
+  title="Basin Map"
+  isOpen={showBasinMap}
+  onToggle={() => setShowBasinMap((v) => !v)}
+>
+  {basinMapUrl ? (
+    <>
+      <div style={styles.singlePlotWrap}>
+        <PlotTile
+          title={`Root-Labeled Basin Map — ${analyticsKey} — ${boundaryMethod}`}
+          url={basinMapUrl}
+          alt="Basin map"
+        />
+      </div>
+
+      {/* ✅ NEW: Interpretation Block */}
+      <div
+        style={{
+          marginTop: "10px",
+          padding: "10px 12px",
+          borderRadius: "8px",
+          background: "#f9fafb",
+          border: "1px solid #e5e7eb",
+          color: "#374151",
+          fontSize: "13px",
+          lineHeight: "1.6",
+        }}
+      >
+        <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+          Basin map interpretation
+        </div>
+
+        <div>
+          This plot shows the <strong>observed attraction structure</strong> for
+          the selected method. Each colored region represents the converged root
+          or attractor reached from sampled initial guesses.
+        </div>
+
+        <div style={{ marginTop: "6px" }}>
+          These regions are derived from empirical solver outcomes across the
+          sampled domain. They represent <strong>observed basins</strong>, not
+          the analytic ground-truth root definition by themselves.
+        </div>
+
+        <div style={{ marginTop: "6px" }}>
+          Broad contiguous color bands indicate more stable attraction zones,
+          while narrow interleaved or fragmented regions indicate stronger
+          sensitivity to initialization and more complex basin geometry.
+        </div>
+      </div>
+
+      {/* Existing Expected Behavior Block */}
+      {asArray(problemExpectations?.section_expectations?.basin_map?.notes)
+        .length > 0 ? (
+        <div style={styles.blockSpacer}>
+          <div style={styles.innerPanel}>
+            <div style={styles.innerPanelTitle}>
+              Expected Basin Behavior
+            </div>
+            <BulletList
+              items={
+                problemExpectations.section_expectations.basin_map.notes
+              }
+            />
+          </div>
+        </div>
+      ) : null}
+    </>
+  ) : (
+    <p style={styles.emptyText}>No basin map available.</p>
+  )}
+</SubsectionCard>
+
+<SubsectionCard
+  title="Basin Complexity"
+  isOpen={showBasinComplexity}
+  onToggle={() => setShowBasinComplexity((v) => !v)}
+>
+  {clusterTol !== undefined && clusterTol !== null ? (
+    <p style={styles.metaText}>
+      <b>Cluster tolerance:</b> {formatNumber(clusterTol)} (based on sweep resolution)
+    </p>
+  ) : null}
+
+  {basinEntropyPlotUrl ? (
+    <div style={styles.singlePlotWrap}>
+      <PlotTile
+        title="Basin Entropy Comparison"
+        url={basinEntropyPlotUrl}
+        alt="Basin entropy comparison"
+      />
+    </div>
+  ) : (
+    <p style={styles.emptyText}>
+      No basin entropy comparison plot available.
+    </p>
+  )}
+
+  <div
+    style={{
+      marginTop: "10px",
+      padding: "10px 12px",
+      borderRadius: "8px",
+      background: "#f9fafb",
+      border: "1px solid #e5e7eb",
+      color: "#374151",
+      fontSize: "13px",
+      lineHeight: "1.6",
+    }}
+  >
+    <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+      Basin complexity interpretation
+    </div>
+
+    {(() => {
+      const rows = asArray(entropyRows).filter(
+        (row) => row && row.entropy !== undefined && row.entropy !== null
+      );
+
+      if (!rows.length) {
+        return <div>No entropy data available.</div>;
+      }
+
+      const entropies = rows.map((r) => Number(r.entropy)).filter(Number.isFinite);
+
+      const minE = Math.min(...entropies);
+      const maxE = Math.max(...entropies);
+
+      const minMethods = rows
+        .filter((r) => Number(r.entropy) === minE)
+        .map((r) => prettyMethod(r.method));
+
+      const maxMethods = rows
+        .filter((r) => Number(r.entropy) === maxE)
+        .map((r) => prettyMethod(r.method));
+
+      return (
+        <>
+          <div>
+            Lower entropy indicates more structured basin geometry, while higher
+            entropy indicates more fragmented and complex basin structure.
+          </div>
+
+          <div style={{ marginTop: "6px" }}>
+            <strong>Most structured method(s):</strong>
+<div>{minMethods.join(", ")}</div>
+<div style={{ fontSize: "12px", color: "#6b7280" }}>
+  Entropy: {formatEntropy(minE)}
+</div>
+          </div>
+
+          <div style={{ marginTop: "4px" }}>
+            <strong>Most fragmented method(s):</strong> {maxMethods.join(", ")} ({formatEntropy(maxE)})
+          </div>
+
+          <div style={{ marginTop: "6px" }}>
+            More structured basin geometry generally suggests more predictable
+            convergence across initial guesses. More fragmented basin geometry
+            suggests stronger sensitivity to initialization and less stable
+            global behavior.
+          </div>
+        </>
+      );
+    })()}
+  </div>
+
+  <div style={styles.blockSpacer}>
+    <DataTable
+      columns={[
+        {
+          key: "method",
+          label: "Method",
+          render: (row) => prettyMethod(row.method),
+        },
+        {
+          key: "entropy",
+          label: "Entropy",
+          render: (row) => formatEntropy(row.entropy),
+        },
+        {
+          key: "num_basins",
+          label: "Basins",
+          render: (row) => formatNumber(row.num_basins),
+        },
+        {
+          key: "total_converged",
+          label: "Converged Runs",
+          render: (row) => formatNumber(row.total_converged),
+        },
+        {
+          key: "cluster_tol",
+          label: "Cluster Tol",
+          render: (row) => formatNumber(row.cluster_tol),
+        },
+      ]}
+      rows={entropyRows}
+      emptyText="No basin entropy metrics available."
+    />
+  </div>
+</SubsectionCard>
+
+<SubsectionCard
+  title="Basin Distribution Plots"
+  isOpen={showBasinDistribution}
+  onToggle={() => setShowBasinDistribution((v) => !v)}
+>
+  <PlotGrid
+    entries={basinDistributionEntries}
+    prettyMethodFn={prettyMethod}
+    altPrefix="Basin distribution for"
+    emptyText="No basin distribution artifacts available."
+  />
+
+  {asArray(basinDistributionEntries).length > 0 ? (
+    <div
+      style={{
+        marginTop: "10px",
+        padding: "10px 12px",
+        borderRadius: "8px",
+        background: "#f9fafb",
+        border: "1px solid #e5e7eb",
+        color: "#374151",
+        fontSize: "13px",
+        lineHeight: "1.6",
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+        Basin distribution interpretation
+      </div>
+
+      <div>
+        These plots show how each method distributes its converged runs across
+        the observed root basins. A more uniform distribution suggests broader
+        coverage across attractors, while a strongly skewed distribution suggests
+        that the method is biased toward particular roots or attraction regions.
+      </div>
+
+      <div style={{ marginTop: "6px" }}>
+        If some expected roots are absent or receive very little probability,
+        that can indicate incomplete global coverage, unequal basin sizes, or a
+        tendency of the method to favor only part of the domain.
+      </div>
+
+      <div style={{ marginTop: "6px" }}>
+        Distribution plots should be read together with root coverage and basin
+        size plots: a balanced distribution is not always required, but strong
+        imbalance can reveal solver preference, asymmetric basin geometry, or
+        missed attractors.
+      </div>
+    </div>
+  ) : null}
+</SubsectionCard>
 
                 <SubsectionCard
                   title="Root Basin Size"
@@ -3028,404 +3315,952 @@ function normalizeMonteCarloRows(data) {
                   onToggle={() => setShowRootBasinSize((v) => !v)}
                 >
                   <PlotGrid
-                    entries={rootDistributionEntries}
+                    entries={basinDistributionEntries}
                     prettyMethodFn={prettyMethod}
-                    altPrefix="Root basin distribution for"
-                    emptyText="No root basin distribution available."
-                  />
-                </SubsectionCard>
-              </SectionCard>
-
-              <SectionCard
-                title="Initialization Sampling"
-                isOpen={showInitializationSampling}
-                onToggle={() => setShowInitializationSampling((v) => !v)}
-                description="Diagnostics showing where initial guesses were sampled and how they relate to convergence outcomes."
-              >
-                <SubsectionCard
-                  title="Initialization Histograms"
-                  isOpen={showInitHist}
-                  onToggle={() => setShowInitHist((v) => !v)}
-                >
-                  <PlotGrid
-                    entries={initializationHistogramEntries}
-                    prettyMethodFn={prettyMethod}
-                    altPrefix="Initialization histogram for"
-                    emptyText="No initialization histogram artifacts available."
-                  />
-                </SubsectionCard>
-
-                <SubsectionCard
-                  title="Initial Guess vs Converged Root"
-                  isOpen={showInitVsRoot}
-                  onToggle={() => setShowInitVsRoot((v) => !v)}
-                >
-                  <PlotGrid
-                    entries={initialXVsRootEntries}
-                    prettyMethodFn={prettyMethod}
-                    altPrefix="Initial guess vs converged root for"
-                    emptyText="No initial guess vs root artifacts available."
-                  />
-                </SubsectionCard>
-
-                <SubsectionCard
-                  title="Initial Guess vs Iterations"
-                  isOpen={showInitVsIter}
-                  onToggle={() => setShowInitVsIter((v) => !v)}
-                >
-                  <PlotGrid
-                    entries={initialXVsIterationsEntries}
-                    prettyMethodFn={prettyMethod}
-                    altPrefix="Initial guess vs iterations for"
-                    emptyText="No initial guess vs iterations artifacts available."
-                  />
-                </SubsectionCard>
-              </SectionCard>
-
-              <SectionCard
-                title="Solver Stability"
-                isOpen={showSolverStability}
-                onToggle={() => setShowSolverStability((v) => !v)}
-                description="Regions where solvers fail, diverge, or exhibit unstable convergence."
-              >
-                {failureQuickNote ? (
-                  <div style={styles.innerPanel}>
-                    <div style={styles.innerPanelTitle}>Stability Summary</div>
-                    <p style={styles.paragraph}>{failureQuickNote}</p>
-                  </div>
-                ) : null}
-
-                <SubsectionCard
-                  title="Failure Region Plots"
-                  isOpen={showFailureRegions}
-                  onToggle={() => setShowFailureRegions((v) => !v)}
-                >
-                  <PlotGrid
-                    entries={failureRegionEntries}
-                    prettyMethodFn={prettyMethod}
-                    altPrefix="Failure region for"
-                    emptyText="No failure region artifacts available."
+                    altPrefix="Root basin size for"
+                    emptyText="No root basin size artifacts available."
                   />
 
-                  {interpretationSummary?.failure_interpretation ? (
-                    <div style={styles.blockSpacer}>
-                      <div style={styles.innerPanel}>
-                        <div style={styles.innerPanelTitle}>
-                          Failure Interpretation
-                        </div>
-                        <BulletList
-                          items={
-                            interpretationSummary.failure_interpretation
-                              .global_notes || []
-                          }
-                          emptyText="No failure interpretation available."
-                        />
+                  {asArray(basinDistributionEntries).length > 0 ? (
+                    <div
+                      style={{
+                        marginTop: "10px",
+                        padding: "10px 12px",
+                        borderRadius: "8px",
+                        background: "#f9fafb",
+                        border: "1px solid #e5e7eb",
+                        color: "#374151",
+                        fontSize: "13px",
+                        lineHeight: "1.6",
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+                        Root basin size interpretation
+                      </div>
+
+                      <div>
+                        These plots show how many initial guesses converge to each observed root,
+                        effectively measuring the relative size of each basin of attraction.
+                      </div>
+
+                      <div style={{ marginTop: "6px" }}>
+                        A more uniform distribution of basin sizes suggests balanced attraction
+                        across roots, while strongly uneven basin sizes indicate dominance of
+                        certain roots or attraction regions.
+                      </div>
+
+                      <div style={{ marginTop: "6px" }}>
+                        Large dominant basins may reflect either true geometric dominance or
+                        solver bias. Very small or missing basins may indicate that some roots
+                        are difficult to discover under the current method or sampling.
+                      </div>
+
+                      <div style={{ marginTop: "6px" }}>
+                        Basin size should be interpreted together with entropy and distribution:
+                        balanced basin sizes with low entropy generally indicate more stable and
+                        predictable global behavior.
                       </div>
                     </div>
                   ) : null}
                 </SubsectionCard>
               </SectionCard>
 
-              <SectionCard
-                title="Statistical Diagnostics"
-                isOpen={showStatDiagnostics}
-                onToggle={() => setShowStatDiagnostics((v) => !v)}
-                description="Summarizes aggregate solver performance, convergence efficiency, failure behavior, and tail-risk across all sampled initializations."
-              >
-                <SubsectionCard
-                  title="Root Coverage"
-                  isOpen={showRootCoverage}
-                  onToggle={() => setShowRootCoverage((v) => !v)}
-                >
-                  {rootCoverageData ? (
-                    <>
-                      <InfoGrid
-                        items={[
-                          {
-                            label: "Total Roots Detected",
-                            value: rootCoverageData.total_roots_detected,
-                          },
-                          {
-                            label: "Global Roots",
-                            value: (rootCoverageData.global_roots || []).join(", "),
-                          },
-                        ]}
-                      />
+<SectionCard
+  title="Initialization Sampling"
+  isOpen={showInitializationSampling}
+  onToggle={() => setShowInitializationSampling((v) => !v)}
+  description="Diagnostics showing where initial guesses were sampled and how they relate to convergence outcomes."
+>
+  <p style={styles.paragraph}>
+    Initialization sampling shows how initial guesses are distributed and how they
+    influence convergence behavior across methods.
+  </p>
+  {(
+  asArray(initializationHistogramEntries).length > 0 ||
+  asArray(initialXVsRootEntries).length > 0 ||
+  asArray(initialXVsIterationsEntries).length > 0
+) && (
+  <div
+    style={{
+      marginTop: "10px",
+      marginBottom: "10px",
+      padding: "10px 12px",
+      borderRadius: "8px",
+      background: "#f3f4f6",
+      border: "1px solid #e5e7eb",
+      color: "#374151",
+      fontSize: "13px",
+      lineHeight: "1.6",
+    }}
+  >
+    <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+      Initialization behavior summary
+    </div>
 
-                      <div style={styles.blockSpacer}>
-                        <DataTable
-                          columns={[
-                            {
-                              key: "solver",
-                              label: "Solver",
-                              render: (row) => prettyMethod(row.solver),
-                            },
-                            { key: "roots_found", label: "Roots Found" },
-                            { key: "total_roots", label: "Total Roots" },
-                            {
-                              key: "coverage",
-                              label: "Coverage",
-                              render: (row) => formatPercent(row.coverage),
-                            },
-                            {
-                              key: "found_roots",
-                              label: "Found Roots",
-                              render: (row) => (row.found_roots || []).join(", "),
-                            },
-                          ]}
-                          rows={Object.entries(rootCoverageData.solvers || {}).map(
-                            ([solver, info]) => ({
-                              solver,
-                              ...info,
-                            })
-                          )}
-                        />
-                      </div>
+    <div>
+      These diagnostics collectively describe how solver behavior depends on the
+      starting point. They reveal whether convergence is consistent across the
+      domain or concentrated in specific regions.
+    </div>
 
-                      {rootCoveragePlot ? (
-                        <div style={styles.blockSpacer}>
-                          <div style={styles.singlePlotWrap}>
-                            <PlotTile
-                              title="Root Coverage Comparison"
-                              url={toOutputUrl(rootCoveragePlot)}
-                              alt="Root coverage comparison"
-                            />
-                          </div>
-                        </div>
-                      ) : null}
+    <div style={{ marginTop: "6px" }}>
+      Uniform sampling with smooth root mapping and stable iteration counts
+      suggests robust global behavior. Strong dependence on initial conditions,
+      abrupt root switching, or localized high-iteration regions indicate
+      sensitivity and potential instability.
+    </div>
 
-                      {interpretationSummary?.root_coverage_interpretation ? (
-                        <>
-                          <div style={styles.blockSpacer}>
-                            <div style={styles.innerPanel}>
-                              <div style={styles.innerPanelTitle}>
-                                Coverage Interpretation
-                              </div>
-                              <BulletList
-                                items={
-                                  interpretationSummary.root_coverage_interpretation
-                                    .comparison_notes || []
-                                }
-                                emptyText="No coverage interpretation available."
-                              />
-                            </div>
-                          </div>
+    <div style={{ marginTop: "6px" }}>
+      This section connects basin geometry with performance: it explains not only
+      which roots are found, but where they are reachable and how difficult they
+      are to compute from different initializations.
+    </div>
+  </div>
+)}
 
-                          <div style={styles.blockSpacer}>
-                            <DataTable
-                              columns={[
-                                {
-                                  key: "method",
-                                  label: "Method",
-                                  render: (row) => prettyMethod(row.method),
-                                },
-                                {
-                                  key: "status",
-                                  label: "Status",
-                                  render: (row) => <Badge>{row.status}</Badge>,
-                                },
-                                { key: "expected", label: "Expected" },
-                                { key: "observed", label: "Observed" },
-                              ]}
-                              rows={Object.entries(
-                                interpretationSummary.root_coverage_interpretation
-                                  .per_method || {}
-                              ).map(([method, info]) => ({
-                                method,
-                                ...info,
-                              }))}
-                              emptyText="No expectation-vs-observation data available."
-                            />
-                          </div>
-                        </>
-                      ) : null}
-                    </>
-                  ) : (
-                    <p style={styles.emptyText}>No root coverage data available.</p>
-                  )}
-                </SubsectionCard>
+  <SubsectionCard
+    title="Initialization Histograms"
+    isOpen={showInitHist}
+    onToggle={() => setShowInitHist((v) => !v)}
+  >
+    <PlotGrid
+      entries={initializationHistogramEntries}
+      prettyMethodFn={prettyMethod}
+      altPrefix="Initialization histogram for"
+      emptyText="No initialization histogram artifacts available."
+    />
 
-                <SubsectionCard
-                  title="Root Basin Statistics"
-                  isOpen={showRootBasinStats}
-                  onToggle={() => setShowRootBasinStats((v) => !v)}
-                >
-                  {rootBasinStatisticsData ? (
-                    <>
-                      <DataTable
-                        columns={[
-                          {
-                            key: "method",
-                            label: "Method",
-                            render: (row) => prettyMethod(row.method),
-                          },
-                          { key: "num_basins", label: "Basins" },
-                          { key: "dominant_root", label: "Dominant Root" },
-                          {
-                            key: "dominant_share",
-                            label: "Dominant Share",
-                            render: (row) => formatPercent(row.dominant_share),
-                          },
-                          { key: "total_converged", label: "Total Converged" },
-                          { key: "failure_count", label: "Failure Count" },
-                        ]}
-                        rows={rootBasinStatisticsData.summary_table || []}
-                        emptyText="No root basin statistics available."
-                      />
+    {asArray(initializationHistogramEntries).length > 0 ? (
+      <div
+        style={{
+          marginTop: "10px",
+          padding: "10px 12px",
+          borderRadius: "8px",
+          background: "#f9fafb",
+          border: "1px solid #e5e7eb",
+          color: "#374151",
+          fontSize: "13px",
+          lineHeight: "1.6",
+        }}
+      >
+        <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+          Initialization histogram interpretation
+        </div>
 
-                      <div style={styles.blockSpacer}>
-                        <PlotGrid
-                          entries={Object.entries(rootBasinStatisticsPlot || {}).map(
-                            ([k, v]) => [k, toOutputUrl(v)]
-                          )}
-                          prettyMethodFn={(m) => `Root Basin Size — ${prettyMethod(m)}`}
-                          altPrefix="Root basin statistics for"
-                          emptyText="No root basin statistics plots available."
-                        />
-                      </div>
+        <div>
+          These plots show how sampled initial guesses were distributed across the
+          domain for each method. They help verify whether the experiment explored
+          the initialization range evenly or whether sampling was concentrated in
+          particular regions.
+        </div>
 
-                      {interpretationSummary?.root_basin_statistics_interpretation ? (
-                        <div style={styles.blockSpacer}>
-                          <div style={styles.innerPanel}>
-                            <div style={styles.innerPanelTitle}>
-                              Basin Statistics Interpretation
-                            </div>
-                            <BulletList
-                              items={
-                                interpretationSummary
-                                  .root_basin_statistics_interpretation
-                                  .expectation_notes || []
-                              }
-                              emptyText="No basin-statistics interpretation available."
-                            />
-                          </div>
-                        </div>
-                      ) : null}
-                    </>
-                  ) : (
-                    <p style={styles.emptyText}>No root basin statistics available.</p>
-                  )}
-                </SubsectionCard>
+        <div style={{ marginTop: "6px" }}>
+          Broad, even coverage supports fair global comparison. Sparse or uneven
+          sampling can hide narrow failure regions, distort basin statistics, or
+          overemphasize behavior in only part of the domain.
+        </div>
+      </div>
+    ) : null}
+  </SubsectionCard>
 
-                <SubsectionCard
-                  title="Solver Comparison"
-                  isOpen={showSolverComparison}
-                  onToggle={() => setShowSolverComparison((v) => !v)}
-                >
-                  {comparisonRows.length > 0 ? (
-                    <>
-                      <DataTable
-                        columns={[
-                          {
-                            key: "method",
-                            label: "Method",
-                            render: (row) => prettyMethod(row.method),
-                          },
-                          {
-                            key: "success_rate",
-                            label: "Success Rate",
-                            render: (row) => formatPercent(row.success_rate),
-                          },
-                          {
-                            key: "mean_iter",
-                            label: "Mean Iter",
-                            render: (row) => formatMean(row.mean_iter),
-                          },
-                          {
-                            key: "median_iter",
-                            label: "Median Iter",
-                            render: (row) => formatNumber(row.median_iter),
-                          },
-                          {
-                            key: "p95_iter",
-                            label: "P95 Iter",
-                            render: (row) => formatNumber(row.p95_iter),
-                          },
-                          {
-                            key: "max_iter",
-                            label: "Max Iter",
-                            render: (row) => formatNumber(row.max_iter),
-                          },
-                          {
-                            key: "failure_count",
-                            label: "Failure Count",
-                            render: (row) => formatNumber(row.failure_count),
-                          },
-                        ]}
-                        rows={comparisonRows}
-                        emptyText="No comparison summary available."
-                      />
+  <SubsectionCard
+    title="Initial Guess vs Converged Root"
+    isOpen={showInitVsRoot}
+    onToggle={() => setShowInitVsRoot((v) => !v)}
+  >
+    <PlotGrid
+      entries={initialXVsRootEntries}
+      prettyMethodFn={prettyMethod}
+      altPrefix="Initial guess vs converged root for"
+      emptyText="No initial guess vs root artifacts available."
+    />
 
-                      {interpretationSummary?.comparison_interpretation?.notes
-                        ?.length > 0 ? (
-                        <div style={styles.blockSpacer}>
-                          <div style={styles.innerPanel}>
-                            <div style={styles.innerPanelTitle}>
-                              Comparison Interpretation
-                            </div>
-                            <BulletList
-                              items={interpretationSummary.comparison_interpretation.notes}
-                              emptyText="No comparison interpretation available."
-                            />
-                          </div>
-                        </div>
-                      ) : null}
-                    </>
-                  ) : (
-                    <p style={styles.emptyText}>No comparison summary available.</p>
-                  )}
-                </SubsectionCard>
+    {asArray(initialXVsRootEntries).length > 0 ? (
+      <div
+        style={{
+          marginTop: "10px",
+          padding: "10px 12px",
+          borderRadius: "8px",
+          background: "#f9fafb",
+          border: "1px solid #e5e7eb",
+          color: "#374151",
+          fontSize: "13px",
+          lineHeight: "1.6",
+        }}
+      >
+        <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+          Initial guess vs converged root interpretation
+        </div>
 
-                <SubsectionCard
-                  title="Pareto Tradeoff Analysis"
-                  isOpen={showPareto}
-                  onToggle={() => setShowPareto((v) => !v)}
-                >
-                  <div style={styles.plotGrid}>
-                    <PlotTile
-                      title="Mean Iterations vs Failure Rate"
-                      url={paretoMeanUrl}
-                      alt="Pareto mean iterations vs failure rate"
-                    />
-                    <PlotTile
-                      title="Median Iterations vs Failure Rate"
-                      url={paretoMedianUrl}
-                      alt="Pareto median iterations vs failure rate"
-                    />
+        <div>
+          These plots show how the final converged root depends on the starting
+          point. They are a direct view of attraction behavior: nearby initial
+          guesses may converge to the same root, or sharp changes may send them to
+          different attractors.
+        </div>
+
+        <div style={{ marginTop: "6px" }}>
+          Smooth, well-separated regions suggest predictable basin structure.
+          Interleaved bands or abrupt switching indicate stronger sensitivity to
+          initialization and more complex global behavior.
+        </div>
+
+        <div style={{ marginTop: "6px" }}>
+          This view should be read together with basin maps and root coverage: it
+          helps explain not just which roots were found, but where in the domain
+          they were reachable.
+        </div>
+      </div>
+    ) : null}
+  </SubsectionCard>
+
+  <SubsectionCard
+    title="Initial Guess vs Iterations"
+    isOpen={showInitVsIter}
+    onToggle={() => setShowInitVsIter((v) => !v)}
+  >
+    <PlotGrid
+      entries={initialXVsIterationsEntries}
+      prettyMethodFn={prettyMethod}
+      altPrefix="Initial guess vs iterations for"
+      emptyText="No initial guess vs iterations artifacts available."
+    />
+
+    {asArray(initialXVsIterationsEntries).length > 0 ? (
+      <div
+        style={{
+          marginTop: "10px",
+          padding: "10px 12px",
+          borderRadius: "8px",
+          background: "#f9fafb",
+          border: "1px solid #e5e7eb",
+          color: "#374151",
+          fontSize: "13px",
+          lineHeight: "1.6",
+        }}
+      >
+        <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+          Initial guess vs iterations interpretation
+        </div>
+
+        <div>
+          These plots show how iteration count varies with the starting point.
+          They reveal where convergence is easy, where it slows down, and where
+          the solver may be struggling near difficult regions of the domain.
+        </div>
+
+        <div style={{ marginTop: "6px" }}>
+          Low and relatively uniform iteration counts suggest stable performance
+          across initializations. Sharp spikes or localized high-iteration bands
+          often indicate sensitive regions, weak local conditioning, or transitions
+          between attraction basins.
+        </div>
+
+        <div style={{ marginTop: "6px" }}>
+          When high-iteration regions align with fragmented basin structure or
+          failures, that is strong evidence of global instability rather than just
+          isolated slow convergence.
+        </div>
+      </div>
+    ) : null}
+  </SubsectionCard>
+</SectionCard>
+
+<SectionCard
+  title="Solver Stability"
+  isOpen={showSolverStability}
+  onToggle={() => setShowSolverStability((v) => !v)}
+  description="Regions where solvers fail, diverge, or exhibit unstable convergence."
+>
+  <p style={styles.paragraph}>
+    Stability analysis identifies where solvers fail, stagnate, or behave
+    inconsistently across the domain. These diagnostics reveal how reliable a
+    method is with respect to initialization.
+  </p>
+
+  <div
+    style={{
+      marginTop: "10px",
+      marginBottom: "10px",
+      padding: "10px 12px",
+      borderRadius: "8px",
+      background: "#f3f4f6",
+      border: "1px solid #e5e7eb",
+      color: "#374151",
+      fontSize: "13px",
+      lineHeight: "1.6",
+    }}
+  >
+    <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+      Stability summary
+    </div>
+
+    {failureQuickNote ? (
+      <div style={{ marginBottom: "8px" }}>{failureQuickNote}</div>
+    ) : null}
+
+    <div>
+      This section highlights where convergence breaks down across the
+      initialization domain. It provides a direct measure of solver reliability
+      under varying starting conditions.
+    </div>
+
+    <div style={{ marginTop: "6px" }}>
+      Consistent convergence across the domain indicates strong global
+      robustness. Localized failure regions reveal sensitivity to initial
+      conditions and potential instability near difficult regions such as basin
+      boundaries or derivative-critical points.
+    </div>
+
+    <div style={{ marginTop: "6px" }}>
+      Observed failures should be interpreted together with basin geometry and
+      analytic expectations: alignment with predicted pathology regions confirms
+      theoretical risk, while unexpected failures may indicate numerical or
+      implementation issues.
+    </div>
+  </div>
+
+  <SubsectionCard
+    title="Failure Region Plots"
+    isOpen={showFailureRegions}
+    onToggle={() => setShowFailureRegions((v) => !v)}
+  >
+    <PlotGrid
+      entries={failureRegionEntries}
+      prettyMethodFn={prettyMethod}
+      altPrefix="Failure region for"
+      emptyText="No failure region artifacts available."
+    />
+
+    <div style={styles.blockSpacer}>
+      <div style={styles.innerPanel}>
+        <div style={styles.innerPanelTitle}>
+          Failure Interpretation
+        </div>
+
+        {interpretationSummary?.failure_interpretation ? (
+          <BulletList
+            items={
+              interpretationSummary.failure_interpretation.global_notes || []
+            }
+            emptyText="No failure interpretation available."
+          />
+        ) : (
+          <p style={styles.paragraph}>No failure interpretation available.</p>
+        )}
+
+        <div
+          style={{
+            marginTop: "10px",
+            padding: "10px 12px",
+            borderRadius: "8px",
+            background: "#f9fafb",
+            border: "1px solid #e5e7eb",
+            color: "#374151",
+            fontSize: "13px",
+            lineHeight: "1.6",
+          }}
+        >
+          <div>
+            Failure region plots show where convergence fails or becomes
+            unstable. Each point corresponds to an initialization that either
+            converged successfully or encountered divergence, stagnation, or
+            iteration limits.
+          </div>
+
+          <div style={{ marginTop: "6px" }}>
+            Isolated failure points indicate localized numerical difficulty,
+            whereas continuous bands of failure suggest structurally unstable
+            regions in the problem.
+          </div>
+
+          <div style={{ marginTop: "6px" }}>
+            Derivative-based methods such as Newton and Secant are generally
+            more sensitive to initialization and may fail near critical points
+            or basin boundaries. Bracket-based methods typically avoid
+            divergence but may trade off speed for robustness.
+          </div>
+
+          <div style={{ marginTop: "6px" }}>
+            Failure regions should be interpreted alongside basin maps and
+            iteration plots: alignment between failure zones and basin
+            transitions indicates inherent problem difficulty rather than random
+            instability.
+          </div>
+        </div>
+      </div>
+    </div>
+  </SubsectionCard>
+</SectionCard>
+
+<SectionCard
+  title="Statistical Diagnostics"
+  isOpen={showStatDiagnostics}
+  onToggle={() => setShowStatDiagnostics((v) => !v)}
+  description="Summarizes aggregate solver performance, convergence efficiency, failure behavior, and tail-risk across all sampled initializations."
+>
+  <p style={styles.paragraph}>
+    This section summarizes root coverage, basin-size statistics, solver
+    comparison, and speed–reliability tradeoffs across all sampled initial
+    conditions.
+  </p>
+
+  {comparisonRows.length > 0 && (
+    <div
+      style={{
+        marginTop: "10px",
+        marginBottom: "10px",
+        padding: "10px 12px",
+        borderRadius: "8px",
+        background: "#f3f4f6",
+        border: "1px solid #e5e7eb",
+        color: "#374151",
+        fontSize: "13px",
+        lineHeight: "1.6",
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+        Statistical summary
+      </div>
+
+      {(() => {
+        const validRows = asArray(comparisonRows).filter(Boolean);
+        if (!validRows.length) return null;
+
+        const maxSuccess = Math.max(
+          ...validRows.map((row) => Number(row.success_rate ?? -Infinity))
+        );
+
+        const fastest = [...validRows].sort(
+          (a, b) =>
+            (Number(a.median_iter) || 1e9) -
+            (Number(b.median_iter) || 1e9)
+        )[0];
+
+        const allPerfect = validRows.every(
+          (row) => Number(row.success_rate) >= 0.999999
+        );
+
+        return (
+          <>
+            {allPerfect ? (
+              <div>
+                <b>Reliability:</b> All methods achieved perfect success rate (
+                {formatPercent(maxSuccess)}).
+              </div>
+            ) : (
+              <div>
+                <b>Most reliable:</b>{" "}
+                {validRows
+                  .filter((row) => Number(row.success_rate) === maxSuccess)
+                  .map((row) => prettyMethod(row.method))
+                  .join(", ")}{" "}
+                ({formatPercent(maxSuccess)})
+              </div>
+            )}
+
+            <div style={{ marginTop: "4px" }}>
+              <b>Fastest (median):</b> {prettyMethod(fastest?.method)} (
+              {formatNumber(fastest?.median_iter)} iterations)
+            </div>
+
+            <div style={{ marginTop: "6px" }}>
+              When reliability and coverage are identical across methods, the
+              main differences arise from convergence speed, stability margins,
+              and sensitivity to initialization rather than from root discovery.
+            </div>
+          </>
+        );
+      })()}
+    </div>
+  )}
+
+  <SubsectionCard
+    title="Root Coverage"
+    isOpen={showRootCoverage}
+    onToggle={() => setShowRootCoverage((v) => !v)}
+  >
+    {(() => {
+      const globalRoots = asArray(
+        rootCoverageData?.global_roots ||
+          rootCoverageData?.globalRoots ||
+          rootCoverageData?.global_behavior?.in_domain_detected_roots ||
+          []
+      ).map((r) => (Math.abs(Number(r)) < 1e-10 ? 0 : Number(r)));
+
+      const solverData =
+        rootCoverageData?.solvers_ui ||
+        rootCoverageData?.solvers ||
+        rootCoverageData?.per_solver ||
+        rootCoverageData?.perSolver ||
+        {};
+
+      const coverageRows = Object.entries(solverData).map(([solver, info]) => {
+        const trueBehavior = info?.true_behavior || {};
+        const benchmarkEval = info?.benchmark_evaluation || {};
+
+        const rootsFound =
+          info?.roots_found ??
+          trueBehavior?.in_domain_detected_root_count ??
+          benchmarkEval?.benchmark_matched_count ??
+          "-";
+
+        const totalRoots =
+          info?.total_roots ??
+          benchmarkEval?.benchmark_known_root_count ??
+          (globalRoots.length > 0 ? globalRoots.length : "-");
+
+        const coverage =
+          info?.coverage ??
+          benchmarkEval?.benchmark_coverage ??
+          null;
+
+        const foundRoots =
+          info?.found_roots ??
+          trueBehavior?.in_domain_detected_roots ??
+          benchmarkEval?.benchmark_matched_roots ??
+          [];
+
+        return {
+          solver,
+          roots_found: rootsFound,
+          total_roots: totalRoots,
+          coverage,
+          found_roots: foundRoots,
+        };
+      });
+
+      const allFullCoverage =
+        coverageRows.length > 0 &&
+        coverageRows.every(
+          (row) => Number(row.coverage) >= 0.999999 || Number(row.coverage) === 1
+        );
+
+      return rootCoverageData ? (
+        <>
+          <InfoGrid
+            items={[
+              {
+                label: "Total Roots Detected",
+                value:
+                  globalRoots.length > 0
+                    ? String(globalRoots.length)
+                    : "Not available",
+              },
+              {
+                label: "Global Roots",
+                value:
+                  globalRoots.length > 0
+                    ? globalRoots.map((r) => formatNumber(r)).join(", ")
+                    : "Not available",
+              },
+            ]}
+          />
+
+          <div style={styles.blockSpacer}>
+            <DataTable
+              columns={[
+                {
+                  key: "solver",
+                  label: "Solver",
+                  render: (row) => prettyMethod(row.solver),
+                },
+                { key: "roots_found", label: "Roots Found" },
+                { key: "total_roots", label: "Total Roots" },
+                {
+                  key: "coverage",
+                  label: "Coverage",
+                  render: (row) =>
+                    row.coverage !== null && row.coverage !== undefined
+                      ? formatPercent(row.coverage)
+                      : "-",
+                },
+                {
+                  key: "found_roots",
+                  label: "Found Roots",
+                  render: (row) => {
+                    const roots = asArray(row.found_roots);
+                    if (!roots.length) return "-";
+                    const preview = roots
+                      .slice(0, 3)
+                      .map((r) => formatNumber(r));
+                    return `${preview.join(", ")}${roots.length > 3 ? " ..." : ""}`;
+                  },
+                },
+              ]}
+              rows={coverageRows}
+              emptyText="No root coverage data available."
+            />
+          </div>
+
+          {rootCoveragePlot ? (
+            <div style={styles.blockSpacer}>
+              <div style={styles.singlePlotWrap}>
+                <PlotTile
+                  title="Benchmark Root Coverage by Solver"
+                  url={toOutputUrl(rootCoveragePlot)}
+                  alt="Benchmark root coverage by solver"
+                />
+              </div>
+            </div>
+          ) : null}
+
+          <div style={styles.blockSpacer}>
+            <div style={styles.innerPanel}>
+              <div style={styles.innerPanelTitle}>
+                Coverage Interpretation
+              </div>
+
+              <p style={styles.paragraph}>
+                Root coverage measures how completely each solver discovers the
+                expected set of roots across all sampled initializations.
+              </p>
+
+              {allFullCoverage ? (
+                <>
+                  <p style={styles.paragraph}>
+                    All evaluated methods achieved complete root coverage across
+                    the domain. This indicates that all attractors are globally
+                    reachable and no solver exhibits basin exclusion or
+                    structural bias.
+                  </p>
+
+                  <p style={styles.paragraph}>
+                    Because coverage is identical across methods, solver
+                    differences are driven by convergence speed, stability, and
+                    sensitivity to initialization rather than discovery
+                    capability.
+                  </p>
+
+                  <p style={styles.paragraph}>
+                    This corresponds to a well-conditioned regime where the
+                    problem structure does not disadvantage any solver, making
+                    efficiency the primary differentiator.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p style={styles.paragraph}>
+                    Missing coverage suggests bias, instability, or limited
+                    basin accessibility. Methods with stronger basin exploration
+                    and robustness tend to recover more of the global root set,
+                    while sensitive methods may miss roots due to attraction
+                    bias or failure regions.
+                  </p>
+
+                  <p style={styles.paragraph}>
+                    Coverage differences should be interpreted together with
+                    basin geometry and failure diagnostics to determine whether
+                    missed roots arise from true geometric difficulty or from
+                    solver-specific instability.
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+
+          {asArray(
+            interpretationSummary?.root_coverage_interpretation?.comparison_notes
+          ).length > 0 ? (
+            <>
+              <div style={styles.blockSpacer}>
+                <div style={styles.innerPanel}>
+                  <div style={styles.innerPanelTitle}>
+                    Coverage Notes from Interpretation Layer
                   </div>
-
-                  {!paretoMeanUrl && !paretoMedianUrl ? (
-                    <p style={styles.emptyText}>No Pareto artifacts available.</p>
-                  ) : null}
-                </SubsectionCard>
-
-                <SubsectionCard
-                  title="Iteration Histograms"
-                  isOpen={showHistograms}
-                  onToggle={() => setShowHistograms((v) => !v)}
-                >
-                  <PlotGrid
-                    entries={histogramEntries}
-                    prettyMethodFn={prettyMethod}
-                    altPrefix="Iteration histogram for"
-                    emptyText="No histogram artifacts available."
+                  <BulletList
+                    items={
+                      interpretationSummary.root_coverage_interpretation
+                        .comparison_notes || []
+                    }
+                    emptyText="No coverage interpretation available."
                   />
-                </SubsectionCard>
+                </div>
+              </div>
 
-                <SubsectionCard
-                  title="Iteration CCDFs"
-                  isOpen={showCcdfs}
-                  onToggle={() => setShowCcdfs((v) => !v)}
-                >
-                  <PlotGrid
-                    entries={ccdfEntries}
-                    prettyMethodFn={prettyMethod}
-                    altPrefix="Iteration CCDF for"
-                    emptyText="No CCDF artifacts available."
-                  />
-                </SubsectionCard>
-              </SectionCard>
+              <div style={styles.blockSpacer}>
+                <DataTable
+                  columns={[
+                    {
+                      key: "method",
+                      label: "Method",
+                      render: (row) => prettyMethod(row.method),
+                    },
+                    {
+                      key: "status",
+                      label: "Status",
+                      render: (row) => <span>{row.status}</span>,
+                    },
+                    { key: "expected", label: "Expected" },
+                    { key: "observed", label: "Observed" },
+                  ]}
+                  rows={Object.entries(
+                    interpretationSummary.root_coverage_interpretation
+                      .per_method || {}
+                  ).map(([method, info]) => ({
+                    method,
+                    ...(info || {}),
+                  }))}
+                  emptyText="No expectation-vs-observation data available."
+                />
+              </div>
+            </>
+          ) : null}
+        </>
+      ) : (
+        <p style={styles.emptyText}>No root coverage data available.</p>
+      );
+    })()}
+  </SubsectionCard>
 
+  <SubsectionCard
+    title="Root Basin Statistics"
+    isOpen={showRootBasinStats}
+    onToggle={() => setShowRootBasinStats((v) => !v)}
+  >
+    {rootBasinStatisticsData ? (
+      <>
+        <DataTable
+          columns={[
+            {
+              key: "method",
+              label: "Method",
+              render: (row) => prettyMethod(row.method),
+            },
+            { key: "num_basins", label: "Basins" },
+            {
+              key: "dominant_root",
+              label: "Dominant Root",
+              render: (row) => formatNumber(row.dominant_root),
+            },
+            {
+              key: "dominant_share",
+              label: "Dominant Share",
+              render: (row) => formatPercent(row.dominant_share),
+            },
+            { key: "total_converged", label: "Converged" },
+            { key: "failure_count", label: "Failures" },
+          ]}
+          rows={(rootBasinStatisticsData.summary_table || []).map((row) => ({
+            ...row,
+            basins: row.num_basins,
+          }))}
+          emptyText="No root basin statistics available."
+        />
+
+        <div style={styles.blockSpacer}>
+          <PlotGrid
+            entries={Object.entries(rootBasinStatisticsPlot || {}).map(
+              ([k, v]) => [k, toOutputUrl(v)]
+            )}
+            prettyMethodFn={(m) => `Root Basin Size — ${prettyMethod(m)}`}
+            altPrefix="Root basin statistics for"
+            emptyText="No root basin statistics plots available."
+          />
+        </div>
+
+        {interpretationSummary?.root_basin_statistics_interpretation ? (
+          <div style={styles.blockSpacer}>
+            <div style={styles.innerPanel}>
+              <div style={styles.innerPanelTitle}>
+                Basin Statistics Interpretation
+              </div>
+              <BulletList
+                items={
+                  interpretationSummary
+                    .root_basin_statistics_interpretation
+                    .expectation_notes || []
+                }
+                emptyText="No basin-statistics interpretation available."
+              />
+            </div>
+          </div>
+        ) : null}
+
+        <div style={styles.blockSpacer}>
+          <div style={styles.innerPanel}>
+            <div style={styles.innerPanelTitle}>
+              Basin Dominance Interpretation
+            </div>
+
+            <p style={styles.paragraph}>
+              Root basin statistics quantify how convergence is distributed
+              across different attractors. A dominant root with a large share
+              indicates that most initializations converge to that root,
+              suggesting either geometric dominance or solver bias.
+            </p>
+
+            <p style={styles.paragraph}>
+              Balanced basin shares indicate more uniform exploration and fair
+              coverage, while strong imbalance may reveal difficulty in reaching
+              certain roots or sensitivity to initialization.
+            </p>
+          </div>
+        </div>
+      </>
+    ) : (
+      <p style={styles.emptyText}>No root basin statistics available.</p>
+    )}
+  </SubsectionCard>
+
+  <SubsectionCard
+    title="Solver Comparison"
+    isOpen={showSolverComparison}
+    onToggle={() => setShowSolverComparison((v) => !v)}
+  >
+    {comparisonRows.length > 0 ? (
+      <>
+        <DataTable
+          columns={[
+            {
+              key: "method",
+              label: "Method",
+              render: (row) => prettyMethod(row.method),
+            },
+            {
+              key: "success_rate",
+              label: "Success",
+              render: (row) => formatPercent(row.success_rate),
+            },
+            {
+              key: "mean_iter",
+              label: "Mean Iter",
+              render: (row) => formatNumber(row.mean_iter),
+            },
+            {
+              key: "median_iter",
+              label: "Median Iter",
+              render: (row) => formatNumber(row.median_iter),
+            },
+            {
+              key: "p95_iter",
+              label: "P95 Iter",
+              render: (row) => formatNumber(row.p95_iter),
+            },
+            {
+              key: "max_iter",
+              label: "Max Iter",
+              render: (row) => formatNumber(row.max_iter),
+            },
+            {
+              key: "failure_count",
+              label: "Failures",
+              render: (row) => formatNumber(row.failure_count),
+            },
+          ]}
+          rows={comparisonRows}
+          emptyText="No solver comparison data available."
+        />
+
+        {asArray(
+          interpretationSummary?.comparison_interpretation?.notes
+        ).length > 0 ? (
+          <div style={styles.blockSpacer}>
+            <div style={styles.innerPanel}>
+              <div style={styles.innerPanelTitle}>
+                Comparison Interpretation
+              </div>
+              <BulletList
+                items={interpretationSummary.comparison_interpretation.notes}
+                emptyText="No comparison interpretation available."
+              />
+            </div>
+          </div>
+        ) : null}
+
+        <div style={styles.blockSpacer}>
+          <div style={styles.innerPanel}>
+            <div style={styles.innerPanelTitle}>
+              Solver Comparison Interpretation
+            </div>
+
+            <p style={styles.paragraph}>
+              This table summarizes global solver behavior across all sampled
+              initializations. Success rate reflects robustness, while iteration
+              statistics capture convergence efficiency.
+            </p>
+
+            <p style={styles.paragraph}>
+              High success rate with low variance in iterations indicates stable
+              and reliable performance. Methods with low iteration counts but
+              higher failure rates may be faster but less dependable.
+            </p>
+
+            <p style={styles.paragraph}>
+              The combination of success rate, iteration distribution, and
+              failure count provides a comprehensive view of solver tradeoffs
+              between speed and reliability.
+            </p>
+          </div>
+        </div>
+      </>
+    ) : (
+      <p style={styles.emptyText}>No solver comparison data available.</p>
+    )}
+  </SubsectionCard>
+
+  <SubsectionCard
+    title="Pareto Tradeoff Analysis"
+    isOpen={showPareto}
+    onToggle={() => setShowPareto((v) => !v)}
+  >
+    <div style={styles.plotGrid}>
+      <PlotTile
+        title="Mean Iterations vs Failure Rate"
+        url={paretoMeanUrl}
+        alt="Pareto mean iterations vs failure rate"
+      />
+      <PlotTile
+        title="Median Iterations vs Failure Rate"
+        url={paretoMedianUrl}
+        alt="Pareto median iterations vs failure rate"
+      />
+    </div>
+
+    {!paretoMeanUrl && !paretoMedianUrl ? (
+      <p style={styles.emptyText}>No Pareto artifacts available.</p>
+    ) : null}
+
+    {(paretoMeanUrl || paretoMedianUrl) && (
+      <div
+        style={{
+          marginTop: "10px",
+          padding: "10px 12px",
+          borderRadius: "8px",
+          background: "#f9fafb",
+          border: "1px solid #e5e7eb",
+          color: "#374151",
+          fontSize: "13px",
+          lineHeight: "1.6",
+        }}
+      >
+        <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+          Pareto tradeoff interpretation
+        </div>
+
+        <div>
+          These plots show the tradeoff between convergence speed (iterations)
+          and reliability (failure rate). Each point represents a solver.
+        </div>
+
+        <div style={{ marginTop: "6px" }}>
+          Methods closer to the lower-left region achieve both low iteration
+          counts and low failure rates, representing stronger overall
+          performance. Methods farther from this region exhibit clearer
+          tradeoffs between speed and robustness.
+        </div>
+
+        <div style={{ marginTop: "6px" }}>
+          This analysis highlights that no single solver is universally optimal:
+          robust methods prioritize reliability, while aggressive methods
+          prioritize speed at the cost of stability.
+        </div>
+      </div>
+    )}
+  </SubsectionCard>
+</SectionCard>
+
+              
               <SectionCard
                 title="Outputs"
                 isOpen={showOutputs}
@@ -3475,6 +4310,7 @@ function normalizeMonteCarloRows(data) {
     </div>
   );
 }
+
 
 const styles = {
   page: {
@@ -4216,6 +5052,20 @@ const styles = {
     gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
     gap: 12,
   },
+
+  kvLabel: {
+  fontSize: 12,
+  fontWeight: 800,
+  color: "#64748b",
+  textTransform: "uppercase",
+  marginBottom: 4,
+},
+
+kvValue: {
+  fontSize: 15,
+  fontWeight: 700,
+  color: "#0f172a",
+},
 
   outputLink: {
     display: "block",

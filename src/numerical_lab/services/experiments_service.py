@@ -10,11 +10,10 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 from dataclasses import asdict
 from types import SimpleNamespace
-from numerical_lab.benchmarks.registry import get as get_registered_benchmark
 
+from numerical_lab.benchmarks.registry import get as get_registered_benchmark
 from numerical_lab.diagnostics.adaptive_boundaries import run_adaptive_boundary_refinement
 from numerical_lab.engine.controller import NumericalEngine
-
 from numerical_lab.services.sampling import generate_initial_points
 from numerical_lab.services.experiment_jobs import create_job, update_job
 from numerical_lab.experiments.monte_carlo import run_monte_carlo_experiment
@@ -25,9 +24,8 @@ from numerical_lab.analytics.interpretation import (
 )
 from numerical_lab.analytics.failure_analysis import generate_failure_statistics
 from numerical_lab.analytics.problem_expectations import build_problem_expectations
-from numerical_lab.services.experiment_jobs import update_job
+from numerical_lab.validation.engine import run_validation
 from numerical_lab.experiments import sweep as sweep_module
-from numerical_lab.experiments.monte_carlo import run_monte_carlo_experiment
 from numerical_lab.experiments import detect_basin_boundaries as boundary_module
 from numerical_lab.diagnostics.boundaries import save_boundary_artifacts
 
@@ -54,6 +52,7 @@ def _parse_range(
         return float(x_min), float(x_max)
 
     raise ValueError("Range must be either a 2-element list/tuple or a dict with x_min/x_max")
+
 
 def start_monte_carlo_job(
     *,
@@ -315,10 +314,10 @@ def _run_adaptive_refinement_safe(
 
     return adaptive_boundary_artifacts
 
+
 def _build_problem_from_benchmark(benchmark_id: str):
     bench = get_registered_benchmark(str(benchmark_id).strip())
 
-    # fallback dummy expressions to satisfy existing pipeline
     expr = "0"
     dexpr = "0"
 
@@ -328,11 +327,8 @@ def _build_problem_from_benchmark(benchmark_id: str):
         category=bench.category,
         function=bench.function,
         derivative=bench.derivative,
-
-        # 🔴 critical fix
         expr=expr,
         dexpr=dexpr,
-
         analytic_notes=bench.analytic_notes,
         known_roots=bench.known_roots,
         scalar_range=tuple(bench.domain),
@@ -490,8 +486,6 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             sampling_mode=sampling_mode,
         )
 
-        # Temporary stronger clustering floor for benchmark interpretation validation.
-        # This avoids treating each nearby converged point as a separate root cluster.
         try:
             a, b = problem.scalar_range
             domain_width = abs(float(b) - float(a))
@@ -500,7 +494,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
 
         cluster_tol = max(
             base_cluster_tol,
-            0.1,  # temporary debug floor
+            0.1,
             0.02 * domain_width,
         )
 
@@ -510,7 +504,10 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
         problem_expectations = {}
         problem_expectations_path = analytics_dir / "problem_expectations.json"
         try:
-            if getattr(problem, "expr", None):
+            expr_value = getattr(problem, "expr", None)
+            expr_is_meaningful = bool(expr_value) and str(expr_value).strip() not in {"", "0"}
+
+            if expr_is_meaningful:
                 problem_expectations = build_problem_expectations(
                     expr=problem.expr,
                     dexpr=problem.dexpr,
@@ -528,13 +525,24 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
                     "message": "Analytic expectations sourced from benchmark metadata because symbolic expr/dexpr are not available.",
                 }
 
+            if "expected_root_count" not in problem_expectations:
+                roots = problem_expectations.get("roots")
+                known_roots = problem_expectations.get("known_roots")
+
+                if isinstance(roots, list):
+                    problem_expectations["expected_root_count"] = len(roots)
+                elif isinstance(known_roots, list):
+                    problem_expectations["expected_root_count"] = len(known_roots)
+
             with open(problem_expectations_path, "w", encoding="utf-8") as fexp:
                 json.dump(problem_expectations, fexp, indent=2)
             print("[debug] problem expectations saved:", problem_expectations_path)
         except Exception as e:
             print(f"[warn] problem expectation generation failed: {e}")
             problem_expectations = {}
+
         print(problem)
+
         analytics = generate_sweep_analytics(
             rows=[asdict(r) for r in records],
             methods=methods_to_use,
@@ -554,7 +562,10 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
                 records_csv=records_csv_path,
                 output_dir=analytics_dir,
             )
-            print("[debug] failure analysis keys:", list(failure_analysis.keys()) if isinstance(failure_analysis, dict) else type(failure_analysis))
+            print(
+                "[debug] failure analysis keys:",
+                list(failure_analysis.keys()) if isinstance(failure_analysis, dict) else type(failure_analysis),
+            )
         except Exception as e:
             print(f"[warn] failure statistics generation failed: {e}")
             failure_analysis = {}
@@ -604,6 +615,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
 
         interpretation_summary = {}
         interpretation_saved_paths = {}
+        validation = {}
         try:
             print("[debug] building interpretation summary...")
             print(
@@ -632,10 +644,170 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
                 interpretation=interpretation_summary,
             )
             print("[debug] interpretation files saved:", interpretation_saved_paths)
+
+            try:
+                # =========================
+                # REBUILD total_runs IF MISSING
+                # =========================
+                total_runs = summary.get("total_runs")
+                if total_runs is None:
+                    print("[FIX] total_runs missing — rebuilding from analytics")
+                    comparison_data = analytics.get("comparison_summary_data", {})
+                    total_runs = comparison_data.get("total_runs")
+                    if total_runs is not None:
+                        total_runs = int(total_runs)
+                        summary["total_runs"] = total_runs
+
+                # =========================
+                # REBUILD METHODS IF MISSING
+                # =========================
+                methods_block = summary.get("methods")
+                if not methods_block:
+                    print("[FIX] summary['methods'] is missing — rebuilding from analytics")
+                    comparison_data = analytics.get("comparison_summary_data", {})
+                    methods_list = comparison_data.get("methods", [])
+
+                    rebuilt_methods = {}
+                    for m in methods_list:
+                        name = m.get("method")
+                        if not name:
+                            continue
+                        rebuilt_methods[name] = {
+                            "success_rate": m.get("success_rate"),
+                            "failure_count": m.get("failure_count"),
+                        }
+
+                    summary["methods"] = rebuilt_methods
+
+                # =========================
+                # ROOT COUNT FIX
+                # =========================
+                if "observed_root_count" not in summary:
+                    root_data = analytics.get("root_coverage_data", {})
+                    global_info = root_data.get("global_behavior", {})
+                    observed = global_info.get("in_domain_detected_root_count")
+                    if observed is not None:
+                        summary["observed_root_count"] = int(observed)
+
+                if "expected_root_count" not in summary:
+                    expected = problem_expectations.get("expected_root_count")
+                    if expected is not None:
+                        summary["expected_root_count"] = int(expected)
+
+                # =========================
+                # NORMALIZE METHODS FOR VALIDATION
+                # =========================
+                methods_block = summary.get("methods")
+                total_runs = summary.get("total_runs")
+
+                if isinstance(methods_block, list):
+                    normalized_methods: Dict[str, Dict[str, Any]] = {}
+                    for method_entry in methods_block:
+                        method_name = method_entry.get("method")
+                        if not method_name:
+                            continue
+                        normalized_methods[method_name] = dict(method_entry)
+                    summary["methods"] = normalized_methods
+                    methods_block = summary.get("methods")
+
+                if isinstance(methods_block, dict):
+                    root_stats = analytics.get("root_basin_statistics_data", {})
+                    per_method_rows = root_stats.get("summary_table", []) if isinstance(root_stats, dict) else []
+
+                    per_method_totals = {}
+                    for row in per_method_rows:
+                        method_name = row.get("method")
+                        if not method_name:
+                            continue
+
+                        total_converged = row.get("total_converged")
+                        failure_count_row = row.get("failure_count")
+
+                        if total_converged is None and failure_count_row is None:
+                            continue
+
+                        total_converged = int(total_converged or 0)
+                        failure_count_row = int(failure_count_row or 0)
+                        per_method_totals[method_name] = {
+                            "total_converged": total_converged,
+                            "failure_count": failure_count_row,
+                            "total": total_converged + failure_count_row,
+                        }
+
+                    for method_name, method_entry in methods_block.items():
+                        method_total = None
+                        method_failure = method_entry.get("failure_count")
+                        method_success_rate = method_entry.get("success_rate")
+
+                        stats_row = per_method_totals.get(method_name)
+                        if stats_row:
+                            method_total = stats_row["total"]
+                            if method_failure is None:
+                                method_failure = stats_row["failure_count"]
+
+                            success_count = stats_row["total_converged"]
+                        else:
+                            # fallback to global total only if no per-method total exists
+                            if total_runs is None:
+                                continue
+
+                            method_total = int(total_runs)
+
+                            if method_success_rate is not None:
+                                success_count = int(round(float(method_success_rate) * method_total))
+                            elif method_failure is not None:
+                                success_count = method_total - int(method_failure)
+                            else:
+                                continue
+
+                        resolved_failure_count = (
+                            int(method_failure)
+                            if method_failure is not None
+                            else method_total - success_count
+                        )
+
+                        method_entry["success_count"] = success_count
+                        method_entry["failure_count"] = resolved_failure_count
+                        method_entry["total"] = method_total
+                        method_entry["status_counts"] = {
+                            "converged": success_count,
+                            "failed": resolved_failure_count,
+                        }
+                        method_entry["success_rate"] = (
+                            success_count / method_total if method_total > 0 else 0.0
+                        )
+                print("[DEBUG] AFTER NORMALIZATION:", json.dumps(summary.get("methods"), indent=2))
+
+                # =========================
+                # FORCE METHOD-LEVEL INTERPRETATION FOR VALIDATION
+                # =========================
+                interpretation_summary["methods"] = {}
+                for method_name, method_entry in summary.get("methods", {}).items():
+                    interpretation_summary["methods"][method_name] = {
+                        "summary": (
+                            f"{method_name} success_rate={method_entry.get('success_rate', 'unknown')}, "
+                            f"failure_count={method_entry.get('failure_count', 'unknown')}"
+                        )
+                    }
+
+                print("[DEBUG] INTERPRETATION METHODS:", interpretation_summary["methods"])
+
+                validation = run_validation(
+                    summary=summary,
+                    interpretation=interpretation_summary,
+                    expectations=problem_expectations,
+                    output_dir=analytics_dir,
+                    methods=methods_to_use,
+                )
+                print("[debug] validation artifacts:", validation.get("artifacts"))
+            except Exception as e:
+                print(f"[warn] validation generation failed: {e}")
+                validation = {}
         except Exception as e:
             print(f"[warn] interpretation summary generation failed: {e}")
             interpretation_summary = {}
             interpretation_saved_paths = {}
+            validation = {}
 
         adaptive_boundary_artifacts = _run_adaptive_refinement_safe(
             records=records,
@@ -789,6 +961,17 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             "boundary_summary_artifact": boundary_summary_artifact_url,
             "adaptive_boundary_artifacts": adaptive_boundary_artifacts,
             "boundary_overlay": boundary_overlay_url,
+            "validation_json": (
+                f"{analytics_base_url}/validation.json"
+                if validation
+                else None
+            ),
+            "validation_txt": (
+                f"{analytics_base_url}/validation.txt"
+                if validation
+                else None
+            ),
+            "validation": validation if validation else None,
             "artifacts": {
                 "basin_map": (
                     f"{analytics_base_url}/{basin_map_path.name}"
@@ -901,6 +1084,22 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
                             else None
                         ),
                         "interpretation_summary_data": interpretation_summary,
+                        "validation": (
+                            f"{analytics_base_url}/validation.json"
+                            if validation
+                            else None
+                        ),
+                        "validation_text": (
+                            f"{analytics_base_url}/validation.txt"
+                            if validation
+                            else None
+                        ),
+                        "validation_data": validation if validation else None,
+                        "solver_selection_recommendation": (
+                            interpretation_summary.get("solver_selection_recommendation")
+                            if interpretation_summary
+                            else None
+                        ),
                         "failure_statistics": (
                             f"{analytics_base_url}/failure_statistics.json"
                             if failure_analysis
@@ -940,7 +1139,7 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             message="Experiment failed",
         )
 
-        
+
 def start_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
     t = threading.Thread(target=run_sweep_job, args=(job_id, payload), daemon=True)
     t.start()
