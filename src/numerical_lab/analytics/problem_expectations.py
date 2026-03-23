@@ -161,7 +161,7 @@ def _detect_critical_points(
         if s0 != s1:
             candidates.append(0.5 * (p0.x + p1.x))
 
-    # NEW: detect local minima of |f'| even when sign does not change
+    # detect local minima of |f'| even when sign does not change
     abs_vals = [abs(p.value) for p in df_points]
     min_abs_val = min(abs_vals) if abs_vals else math.inf
 
@@ -812,6 +812,21 @@ def build_problem_expectations(
         },
     }
 
+    analytic_checks = {
+        "root_candidates": root_candidates,
+        "root_candidate_count": len(root_candidates),
+        "expected_root_count": len(root_candidates),
+        "sign_change_intervals": sign_change_intervals,
+        "sign_change_interval_count": sign_change_interval_count,
+        "sign_change_accessible_root_count": sign_change_interval_count,
+        "raw_sign_change_interval_count": len(raw_intervals),
+        "critical_points": critical_points,
+        "critical_point_count": len(critical_points),
+        "symmetry": symmetry,
+        "newton_pathology_scan": newton_scan,
+        "newton_pathology": newton_pathology,
+    }
+
     return {
         "problem_summary": {
             "expr": expr,
@@ -820,18 +835,17 @@ def build_problem_expectations(
             "bracket_search_range": [float(bracket_range[0]), float(bracket_range[1])],
             "sample_points": sample_points,
         },
-        "analytic_checks": {
-            "root_candidates": root_candidates,
-            "root_candidate_count": len(root_candidates),
-            "sign_change_intervals": sign_change_intervals,
-            "sign_change_interval_count": sign_change_interval_count,
-            "raw_sign_change_interval_count": len(raw_intervals),
-            "critical_points": critical_points,
-            "critical_point_count": len(critical_points),
-            "symmetry": symmetry,
-            "newton_pathology_scan": newton_scan,
-            "newton_pathology": newton_pathology,
-        },
+
+        # top-level aliases for frontend compatibility
+        "expected_root_count": len(root_candidates),
+        "root_candidate_count": len(root_candidates),
+        "root_candidates": root_candidates,
+        "sign_change_interval_count": sign_change_interval_count,
+        "sign_change_accessible_root_count": sign_change_interval_count,
+        "sign_change_intervals": sign_change_intervals,
+        "critical_points": critical_points,
+        "critical_point_count": len(critical_points),
+        "analytic_checks": analytic_checks,
         "method_expectations": method_expectations,
         "section_expectations": section_expectations,
     }

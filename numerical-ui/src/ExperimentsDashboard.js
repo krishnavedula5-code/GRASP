@@ -987,7 +987,7 @@ export default function ExperimentsDashboard() {
   const [showMcComparison, setShowMcComparison] = useState(true);
   const [showMcInterpretation, setShowMcInterpretation] = useState(true);
   const [showMcArtifacts, setShowMcArtifacts] = useState(true);
-
+  const selectedBenchmark = BENCHMARK_DETAILS?.[problemId];
   const pollRef = useRef(null);
   const problemIdRef = useRef(problemId);
 
@@ -1796,10 +1796,8 @@ const detectedRoots = [...new Set(
   const overviewRangeMax =
     result?.scalar_range?.[1] ?? result?.scalar_range?.x_max ?? scalarMax;
 
-  const expectationSource =
-    problemExpectations?.analytic_checks && typeof problemExpectations.analytic_checks === "object"
-      ? problemExpectations.analytic_checks
-      : problemExpectations || {};
+const expectationSource =
+  problemExpectations?.analytic_checks || problemExpectations || null;
 
   const overviewItems = [
     { label: "Problem Mode", value: result?.problem_mode || problemMode },
@@ -3038,41 +3036,50 @@ const detectedRoots = [...new Set(
                   </div>
                 </div>
 
-                {problemExpectations ? (
-                  <div style={styles.blockSpacer}>
-                    <div style={styles.innerPanel}>
-                      <div style={styles.innerPanelTitle}>
-                        Analytic Expectation Snapshot
-                      </div>
-                      <InfoGrid
-                        items={[
-                          {
-                            label: "Expected Root Count",
-                            value: formatNumber(
-                              expectationSource?.root_candidate_count ??
-                              expectationSource?.root_candidates?.length ??
-                              "-"
-                            ),
-                          },
-                          {
-                            label: "Sign-Change Accessible Roots",
-                            value: String(
-                              expectationSource?.sign_change_interval_count ?? "Not available"
-                            ),
-                          },
-                          {
-                            label: "Critical Points",
-                            value: formatNumber(
-                              expectationSource?.critical_point_count ??
-                              expectationSource?.critical_points?.length ??
-                              "-"
-                            ),
-                          },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                ) : null}
+console.log("problemExpectations:", problemExpectations);
+console.log("expectationSource:", expectationSource);
+{problemExpectations ? (
+  <div style={styles.blockSpacer}>
+    <div style={styles.innerPanel}>
+      <div style={styles.innerPanelTitle}>
+        Analytic Expectation Snapshot
+      </div>
+      <InfoGrid
+        items={[
+          {
+            label: "Expected Root Count",
+            value: String(
+              expectationSource?.expected_root_count ??
+              expectationSource?.root_count ??
+              expectationSource?.root_candidate_count ??
+              expectationSource?.root_candidates?.length ??
+              selectedBenchmark?.known_roots?.length ??
+              selectedBenchmark?.roots?.length ??
+              "Not computed"
+            ),
+          },
+          {
+            label: "Sign-Change Accessible Roots",
+            value: String(
+              expectationSource?.sign_change_accessible_root_count ??
+              expectationSource?.sign_change_root_count ??
+              expectationSource?.sign_change_interval_count ??
+              "Not computed"
+            ),
+          },
+          {
+            label: "Critical Points",
+            value: String(
+              expectationSource?.critical_point_count ??
+              expectationSource?.critical_points?.length ??
+              "Not computed"
+            ),
+          },
+        ]}
+      />
+    </div>
+  </div>
+) : null}
 
                 <div style={styles.blockSpacer}>
                   <div style={styles.twoColGrid}>

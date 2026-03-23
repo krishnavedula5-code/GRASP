@@ -315,11 +315,66 @@ def _run_adaptive_refinement_safe(
     return adaptive_boundary_artifacts
 
 
+def _expr_is_meaningful(value: Any) -> bool:
+    if value is None:
+        return False
+    s = str(value).strip()
+    return s not in {"", "0", "0.0", "None", "null"}
+
+
+def _benchmark_expr_fallback(problem_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Fallback symbolic expressions for registered benchmarks when the registry object
+    does not carry expr/dexpr strings explicitly.
+    """
+    pid = str(problem_id).strip().lower()
+
+    fallback_map = {
+        "poly_01": ("x**2 - 2", "2*x"),
+        "poly_02": ("x**3 - 2*x + 2", "3*x**2 - 2"),
+        "poly_03": ("x**3 - x - 2", "3*x**2 - 1"),
+        "trans_01": ("cos(x) - x", "-sin(x) - 1"),
+        "p1": ("x**3 - 2*x + 2", "3*x**2 - 2"),
+        "p2": ("x**3 - x - 2", "3*x**2 - 1"),
+        "p3": ("cos(x) - x", "-sin(x) - 1"),
+        "p4": ("(x - 1)**2 * (x + 2)", "2*(x - 1)*(x + 2) + (x - 1)**2"),
+    }
+
+    return fallback_map.get(pid, (None, None))
+
+
+def _extract_benchmark_exprs(bench) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Try a wide range of likely registry attribute names before falling back
+    to hard-coded benchmark maps.
+    """
+    expr_candidates = [
+        getattr(bench, "expr", None),
+        getattr(bench, "expression", None),
+        getattr(bench, "function_expr", None),
+        getattr(bench, "function_expression", None),
+    ]
+    dexpr_candidates = [
+        getattr(bench, "dexpr", None),
+        getattr(bench, "derivative_expr", None),
+        getattr(bench, "derivative_expression", None),
+    ]
+
+    expr = next((v for v in expr_candidates if _expr_is_meaningful(v)), None)
+    dexpr = next((v for v in dexpr_candidates if _expr_is_meaningful(v)), None)
+
+    if not _expr_is_meaningful(expr):
+        fallback_expr, fallback_dexpr = _benchmark_expr_fallback(getattr(bench, "problem_id", ""))
+        expr = fallback_expr if _expr_is_meaningful(fallback_expr) else None
+        if not _expr_is_meaningful(dexpr):
+            dexpr = fallback_dexpr if _expr_is_meaningful(fallback_dexpr) else None
+
+    return expr, dexpr
+
+
 def _build_problem_from_benchmark(benchmark_id: str):
     bench = get_registered_benchmark(str(benchmark_id).strip())
-
-    expr = "0"
-    dexpr = "0"
+    expr, dexpr = _extract_benchmark_exprs(bench)
 
     return SimpleNamespace(
         problem_id=bench.problem_id,
@@ -505,12 +560,14 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
         problem_expectations_path = analytics_dir / "problem_expectations.json"
         try:
             expr_value = getattr(problem, "expr", None)
-            expr_is_meaningful = bool(expr_value) and str(expr_value).strip() not in {"", "0"}
+            dexpr_value = getattr(problem, "dexpr", None)
+            expr_is_meaningful = _expr_is_meaningful(expr_value)
+            dexpr_is_meaningful = _expr_is_meaningful(dexpr_value)
 
             if expr_is_meaningful:
                 problem_expectations = build_problem_expectations(
-                    expr=problem.expr,
-                    dexpr=problem.dexpr,
+                    expr=str(expr_value).strip(),
+                    dexpr=str(dexpr_value).strip() if dexpr_is_meaningful else None,
                     scalar_range=problem.scalar_range,
                     bracket_search_range=problem.bracket_search_range,
                     methods=methods_to_use,
@@ -580,6 +637,8 @@ def run_sweep_job(job_id: str, payload: Dict[str, Any]) -> None:
             "benchmark_category": benchmark_category,
             "expr": problem.expr,
             "dexpr": problem.dexpr,
+            "benchmark_expr": getattr(problem, "expr", None),
+            "benchmark_dexpr": getattr(problem, "dexpr", None),
             "analytic_notes": getattr(problem, "analytic_notes", None),
             "known_roots": getattr(problem, "known_roots", None),
             "numerical_derivative": numerical_derivative,
