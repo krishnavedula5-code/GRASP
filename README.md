@@ -1,16 +1,16 @@
-# GRASP
+# GRASP — Global Reliability Analysis & Solver Profiling
 
-**GRASP — Solver Reliability Analysis & Validation Framework**
+**GRASP (Global Reliability Analysis & Solver Profiling)** is a research-grade framework for analyzing the **global behavior of numerical root-finding algorithms**.
 
-Basin-of-attraction analysis | Solver benchmarking | Convergence diagnostics
+> Basin-of-attraction analysis | Solver benchmarking | Convergence diagnostics | Validation
 
 ---
 
-## What is GRASP?
+## 🧠 What is GRASP?
 
-GRASP is a **research-grade numerical experimentation and validation framework** for analyzing the global behavior of root-finding algorithms.
+GRASP is a **numerical experimentation and validation framework** designed to study solver behavior across large sets of initial conditions.
 
-Unlike traditional tools that evaluate a solver from a single initial guess, GRASP studies:
+Unlike traditional tools that evaluate solvers from a single starting point, GRASP analyzes:
 
 - Global convergence behavior  
 - Basin-of-attraction structure  
@@ -27,22 +27,36 @@ It is a system for understanding:
 
 ---
 
-## Key Capabilities
+## 🚀 Key Capabilities
 
-- Transparent iteration behavior  
-- Convergence diagnostics  
-- Stability flags  
-- Root coverage analysis  
-- JSON traces for visualization  
-- Auto-generated interpretations  
-- Validation layer for consistency and correctness  
+- 🔍 **Global Analysis** across thousands of initial conditions  
+- 📊 **Monte Carlo reliability estimation**  
+- ⚙️ **Multiple solver support** (Newton, Secant, Bisection, Brent, Hybrid, Safeguarded Newton)  
+- 📈 **Statistical metrics**
+  - Success / failure probability  
+  - Confidence intervals  
+  - Mean & median iterations  
+  - Root coverage  
+- 🧠 **Automated interpretation**
+  - Key observations  
+  - Solver recommendations  
+- ✅ **Validation layer (core contribution)**
+  - Checks consistency between expected and observed behavior  
 
 ---
 
-## Quick Start (PowerShell / Windows)
+## 🌐 Live Demo
 
-Activate environment:
+Try GRASP interactively:
 
-```powershell
-.\venv\Scripts\Activate.ps1
-pip install -e .
+👉 https://root-finding-reliability-framework.vercel.app
+
+---
+
+## 🛠️ Installation
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/krishnavedula5-code/GRASP.git
+cd GRASP
