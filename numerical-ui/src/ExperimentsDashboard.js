@@ -1576,54 +1576,60 @@ export default function ExperimentsDashboard() {
   const paretoMeanUrl = toOutputUrl(analytics?.pareto?.mean_vs_failure);
   const paretoMedianUrl = toOutputUrl(analytics?.pareto?.median_vs_failure);
 
-  const rootCoverageData = analytics?.root_coverage_data || null;
-  const rootCoveragePlot = analytics?.root_coverage_plot || null;
+const rootCoverageData = analytics?.root_coverage_data || null;
+const rootCoveragePlot = analytics?.root_coverage_plot || null;
 
-  const rootBasinStatisticsData = analytics?.root_basin_statistics_data || null;
-  const rootBasinStatisticsPlot = analytics?.root_basin_statistics_plot || {};
+const rootBasinStatisticsData = analytics?.root_basin_statistics_data || null;
 
-  const basinDistributionEntries = useMemo(() => {
-    return Object.entries(analytics?.basin_distribution || {}).map(([k, v]) => [
-      k,
-      toOutputUrl(v),
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics]);
+const rootBasinStatisticsPlot = useMemo(() => {
+  return analytics?.root_basin_statistics_plot || {};
+}, [analytics]);
 
+const rootBasinSizeEntries = useMemo(() => {
+  return Object.entries(rootBasinStatisticsPlot).map(([method, path]) => [
+    method,
+    toOutputUrl(path),
+  ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [rootBasinStatisticsPlot]);
 
+const basinDistributionEntries = useMemo(() => {
+  return Object.entries(analytics?.basin_distribution || {}).map(([k, v]) => [
+    k,
+    toOutputUrl(v),
+  ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [analytics]);
 
-  const initializationHistogramEntries = useMemo(() => {
-    return Object.entries(analytics?.initialization_histogram || {}).map(([k, v]) => [
-      k,
-      toOutputUrl(v),
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics]);
+const initializationHistogramEntries = useMemo(() => {
+  return Object.entries(analytics?.initialization_histogram || {}).map(
+    ([k, v]) => [k, toOutputUrl(v)]
+  );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [analytics]);
 
-  const initialXVsRootEntries = useMemo(() => {
-    return Object.entries(analytics?.initial_x_vs_root || {}).map(([k, v]) => [
-      k,
-      toOutputUrl(v),
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics]);
+const initialXVsRootEntries = useMemo(() => {
+  return Object.entries(analytics?.initial_x_vs_root || {}).map(([k, v]) => [
+    k,
+    toOutputUrl(v),
+  ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [analytics]);
 
-  const initialXVsIterationsEntries = useMemo(() => {
-    return Object.entries(analytics?.initial_x_vs_iterations || {}).map(([k, v]) => [
-      k,
-      toOutputUrl(v),
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics]);
+const initialXVsIterationsEntries = useMemo(() => {
+  return Object.entries(analytics?.initial_x_vs_iterations || {}).map(
+    ([k, v]) => [k, toOutputUrl(v)]
+  );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [analytics]);
 
-
-  const failureRegionEntries = useMemo(() => {
-    return Object.entries(analytics?.failure_region || {}).map(([k, v]) => [
-      k,
-      toOutputUrl(v),
-    ]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analytics]);
+const failureRegionEntries = useMemo(() => {
+  return Object.entries(analytics?.failure_region || {}).map(([k, v]) => [
+    k,
+    toOutputUrl(v),
+  ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [analytics]);
 
 const detectedRootsRaw =
   problemMode === "benchmark"
@@ -3036,8 +3042,7 @@ const expectationSource =
                   </div>
                 </div>
 
-console.log("problemExpectations:", problemExpectations);
-console.log("expectationSource:", expectationSource);
+
 {problemExpectations ? (
   <div style={styles.blockSpacer}>
     <div style={styles.innerPanel}>
@@ -3499,60 +3504,61 @@ console.log("expectationSource:", expectationSource);
   ) : null}
 </SubsectionCard>
 
-                <SubsectionCard
-                  title="Root Basin Size"
-                  isOpen={showRootBasinSize}
-                  onToggle={() => setShowRootBasinSize((v) => !v)}
-                >
-                  <PlotGrid
-                    entries={basinDistributionEntries}
-                    prettyMethodFn={prettyMethod}
-                    altPrefix="Root basin size for"
-                    emptyText="No root basin size artifacts available."
-                  />
 
-                  {asArray(basinDistributionEntries).length > 0 ? (
-                    <div
-                      style={{
-                        marginTop: "10px",
-                        padding: "10px 12px",
-                        borderRadius: "8px",
-                        background: "#f9fafb",
-                        border: "1px solid #e5e7eb",
-                        color: "#374151",
-                        fontSize: "13px",
-                        lineHeight: "1.6",
-                      }}
-                    >
-                      <div style={{ fontWeight: 700, marginBottom: "6px" }}>
-                        Root basin size interpretation
-                      </div>
+<SubsectionCard
+  title="Root Basin Size"
+  isOpen={showRootBasinSize}
+  onToggle={() => setShowRootBasinSize((v) => !v)}
+>
+  <PlotGrid
+    entries={rootBasinSizeEntries}
+    prettyMethodFn={prettyMethod}
+    altPrefix="Root basin size for"
+    emptyText="No root basin size artifacts available."
+  />
 
-                      <div>
-                        These plots show how many initial guesses converge to each observed root,
-                        effectively measuring the relative size of each basin of attraction.
-                      </div>
+  {rootBasinSizeEntries.length > 0 ? (
+    <div
+      style={{
+        marginTop: "10px",
+        padding: "10px 12px",
+        borderRadius: "8px",
+        background: "#f9fafb",
+        border: "1px solid #e5e7eb",
+        color: "#374151",
+        fontSize: "13px",
+        lineHeight: "1.6",
+      }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: "6px" }}>
+        Root basin size interpretation
+      </div>
 
-                      <div style={{ marginTop: "6px" }}>
-                        A more uniform distribution of basin sizes suggests balanced attraction
-                        across roots, while strongly uneven basin sizes indicate dominance of
-                        certain roots or attraction regions.
-                      </div>
+      <div>
+        These plots show how many initial guesses converge to each observed root,
+        effectively measuring the relative size of each basin of attraction.
+      </div>
 
-                      <div style={{ marginTop: "6px" }}>
-                        Large dominant basins may reflect either true geometric dominance or
-                        solver bias. Very small or missing basins may indicate that some roots
-                        are difficult to discover under the current method or sampling.
-                      </div>
+      <div style={{ marginTop: "6px" }}>
+        A more uniform distribution of basin sizes suggests balanced attraction
+        across roots, while strongly uneven basin sizes indicate dominance of
+        certain roots or attraction regions.
+      </div>
 
-                      <div style={{ marginTop: "6px" }}>
-                        Basin size should be interpreted together with entropy and distribution:
-                        balanced basin sizes with low entropy generally indicate more stable and
-                        predictable global behavior.
-                      </div>
-                    </div>
-                  ) : null}
-                </SubsectionCard>
+      <div style={{ marginTop: "6px" }}>
+        Large dominant basins may reflect either true geometric dominance or
+        solver bias. Very small or missing basins may indicate that some roots
+        are difficult to discover under the current method or sampling.
+      </div>
+
+      <div style={{ marginTop: "6px" }}>
+        Basin size should be interpreted together with entropy and distribution:
+        balanced basin sizes with low entropy generally indicate more stable and
+        predictable global behavior.
+      </div>
+    </div>
+  ) : null}
+</SubsectionCard>
               </SectionCard>
 
 <SectionCard
