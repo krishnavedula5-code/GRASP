@@ -1924,14 +1924,70 @@ const expectationSource =
         )[0]
       : null;
 
-  const getStatusColor = (status) => {
-  if (!status) return "#999";
-  if (status.toLowerCase() === "pass") return "green";
-  if (status.toLowerCase() === "warning") return "orange";
-  if (status.toLowerCase() === "suspicious") return "red";
+const getStatusColor = (status) => {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "pass") return "green";
+  if (normalized === "warning") return "orange";
+  if (normalized === "suspicious") return "red";
   return "#999";
 };
 
+const overallValidationStatus =
+  validation?.overview?.status ||
+  validation?.overall_status ||
+  validation?.status ||
+  "unknown";
+
+const validationMethods = asArray(comparisonRows).map((row) => {
+  const methodName = row?.method || row?.name || row?.Method || "-";
+
+  const solverIssues = asArray(validation?.solver_checks?.issues);
+  const methodIssues = solverIssues.filter(
+    (issue) => issue?.method === methodName
+  );
+
+  const nonPassIssue = methodIssues.find(
+    (issue) => String(issue?.severity || "").toLowerCase() !== "pass"
+  );
+
+  return {
+    method: methodName,
+    success_rate:
+      typeof row?.success_rate === "number"
+        ? row.success_rate
+        : typeof row?.successProbability === "number"
+        ? row.successProbability
+        : typeof row?.success === "number"
+        ? row.success
+        : null,
+    status: nonPassIssue ? nonPassIssue.severity : "pass",
+  };
+});
+
+const validationIssueGroups = [
+  {
+    label: "Problem Checks",
+    items: validation?.problem_checks?.issues || [],
+  },
+  {
+    label: "Solver Checks",
+    items: validation?.solver_checks?.issues || [],
+  },
+  {
+    label: "Consistency Checks",
+    items: validation?.consistency_checks?.issues || [],
+  },
+].map((group) => ({
+  ...group,
+  visibleItems: (group.items || []).filter(
+    (issue) => String(issue?.severity || "").toLowerCase() !== "pass"
+  ),
+}));
+
+const totalVisibleValidationIssues = validationIssueGroups.reduce(
+  (sum, group) => sum + group.visibleItems.length,
+  0
+);
   return (
     <div style={styles.page}>
       <div style={styles.pageHeader}>
@@ -2868,159 +2924,154 @@ const expectationSource =
                 )}
               </SectionCard>
 
-            {validation && (
-              <SectionCard
-                title="Validation Summary"
-                isOpen={showValidationSummary}
-                onToggle={() => setShowValidationSummary((v) => !v)}
-                description="Self-validation checks for consistency between problem expectations, solver outputs, and interpretation."
-              >
-                  <div style={styles.blockSpacer}>
-                    <div style={styles.innerPanel}>
-                      <div style={styles.innerPanelTitle}>Overall Status</div>
-                      <div
-                        style={{
-                          fontWeight: 700,
-                          color: getStatusColor(
-                            validation.overall_status || validation.status
-                          ),
-                          fontSize: "16px",
-                        }}
-                      >
-                        {(validation.overview?.status || "unknown").toUpperCase()}
-                      </div>
-                    </div>
-                  </div>
-
-                  {validation.methods && Object.keys(validation.methods).length > 0 ? (
-                    <div style={styles.blockSpacer}>
-                      <div style={styles.innerPanel}>
-                        <div style={styles.innerPanelTitle}>Per-Method Validation</div>
-                        <div style={{ overflowX: "auto" }}>
-                          <table style={styles.table}>
-                            <thead>
-                              <tr>
-                                <th style={styles.th}>Method</th>
-                                <th style={styles.th}>Success Rate</th>
-                                <th style={styles.th}>Status</th>
-                              </tr>
-                            </thead>
-<tbody>
-  {(validation.methods || []).map((method) => {
-    const probabilityIssue = (validation.solver_checks?.issues || []).find(
-      (issue) =>
-        issue.code === "success_probability_consistent" &&
-        issue.method === method
-    );
-
-    const countIssue = (validation.solver_checks?.issues || []).find(
-      (issue) =>
-        issue.code === "success_failure_consistent" &&
-        issue.method === method
-    );
-
-    const successRate =
-      probabilityIssue && probabilityIssue.observed != null
-        ? `${(Number(probabilityIssue.observed) * 100).toFixed(2)}%`
-        : "-";
-
-    const status =
-      probabilityIssue?.severity ||
-      countIssue?.severity ||
-      "unknown";
-
-    return (
-      <tr key={method}>
-        <td style={styles.td}>{prettyMethod(method)}</td>
-        <td style={styles.td}>{successRate}</td>
-        <td
+{validation && (
+  <SectionCard
+    title="Validation Summary"
+    isOpen={showValidationSummary}
+    onToggle={() => setShowValidationSummary((v) => !v)}
+    description="Self-validation checks for consistency between problem expectations, solver outputs, and interpretation."
+  >
+    <div style={styles.blockSpacer}>
+      <div style={styles.innerPanel}>
+        <div style={styles.innerPanelTitle}>Overall Status</div>
+        <div
           style={{
-            ...styles.td,
+            marginTop: "8px",
             fontWeight: 700,
-            color: getStatusColor(status),
+            color: getStatusColor(overallValidationStatus),
+            textTransform: "uppercase",
           }}
         >
-          {status.toUpperCase()}
-        </td>
-      </tr>
-    );
-  })}
-</tbody>
-                          </table>
-                        </div>
-                      </div>
+          {String(overallValidationStatus).toUpperCase()}
+        </div>
+      </div>
+    </div>
+
+    {validationMethods.length > 0 ? (
+      <div style={styles.blockSpacer}>
+        <div style={styles.innerPanel}>
+          <div style={styles.innerPanelTitle}>Per-Method Validation</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Method</th>
+                  <th style={styles.th}>Success Rate</th>
+                  <th style={styles.th}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {validationMethods.map((methodResult, idx) => {
+                  const methodName = methodResult?.method || "-";
+                  const successRate = methodResult?.success_rate;
+                  const status = methodResult?.status || "unknown";
+
+                  return (
+                    <tr key={`${methodName}-${idx}`}>
+                      <td style={styles.td}>{prettyMethod(methodName)}</td>
+                      <td style={styles.td}>
+                        {typeof successRate === "number"
+                          ? formatPercent(successRate)
+                          : "-"}
+                      </td>
+                      <td
+                        style={{
+                          ...styles.td,
+                          fontWeight: 700,
+                          color: getStatusColor(status),
+                        }}
+                      >
+                        {String(status).toUpperCase()}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    ) : (
+      <div style={styles.blockSpacer}>
+        <div style={styles.innerPanel}>
+          <div style={styles.innerPanelTitle}>Per-Method Validation</div>
+          <div style={styles.inlineInfoText}>
+            No per-method validation data available.
+          </div>
+        </div>
+      </div>
+    )}
+
+    <div style={styles.blockSpacer}>
+      <div style={styles.innerPanel}>
+        <div style={styles.innerPanelTitle}>Validation Issues</div>
+
+        <div
+          style={{
+            ...styles.inlineInfoText,
+            marginBottom: "10px",
+            fontWeight: 600,
+          }}
+        >
+          {totalVisibleValidationIssues > 0
+            ? `${totalVisibleValidationIssues} non-pass validation issue${
+                totalVisibleValidationIssues === 1 ? "" : "s"
+              } detected.`
+            : "No non-pass validation issues detected."}
+        </div>
+
+        {validationIssueGroups.map((group) => (
+          <div key={group.label} style={{ marginBottom: "16px" }}>
+            <div style={{ fontWeight: 700, marginBottom: "8px" }}>
+              {group.label} ({group.visibleItems.length})
+            </div>
+
+            {group.visibleItems.length > 0 ? (
+              <div style={{ display: "grid", gap: "10px" }}>
+                {group.visibleItems.map((issue, idx) => (
+                  <div
+                    key={`${group.label}-${issue.code || "issue"}-${idx}`}
+                    style={{
+                      padding: "10px 12px",
+                      borderRadius: "8px",
+                      background: "#f9fafb",
+                      border: "1px solid #e5e7eb",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontWeight: 700,
+                        color: getStatusColor(issue?.severity),
+                        marginBottom: "4px",
+                      }}
+                    >
+                      [{String(issue?.severity || "info").toUpperCase()}]
+                      {issue?.method ? ` ${prettyMethod(issue.method)}` : ""}
+                      {issue?.code ? ` — ${issue.code}` : ""}
                     </div>
-                  ) : null}
-                  <div style={styles.blockSpacer}>
-                    <div style={styles.innerPanel}>
-                      <div style={styles.innerPanelTitle}>Validation Issues</div>
-
-                      {[
-                        {
-                          label: "Problem Checks",
-                          items: validation.problem_checks?.issues || [],
-                        },
-                        {
-                          label: "Solver Checks",
-                          items: validation.solver_checks?.issues || [],
-                        },
-                        {
-                          label: "Consistency Checks",
-                          items: validation.consistency_checks?.issues || [],
-                        },
-                      ].map((group) => (
-                        <div key={group.label} style={{ marginBottom: "16px" }}>
-                          <div style={{ fontWeight: 700, marginBottom: "8px" }}>
-                            {group.label}
-                          </div>
-
-                          {group.items.length > 0 ? (
-                            <div style={{ display: "grid", gap: "10px" }}>
-                              {group.items.filter((issue) => issue.severity !== "pass")
-                                  .map((issue, idx) => (
-                                <div
-                                  key={`${group.label}-${issue.code || "issue"}-${idx}`}
-                                  style={{
-                                    padding: "10px 12px",
-                                    borderRadius: "8px",
-                                    background: "#f9fafb",
-                                    border: "1px solid #e5e7eb",
-                                  }}
-                                >
-                                  <div
-                                    style={{
-                                      fontWeight: 700,
-                                      color: getStatusColor(issue?.severity),
-                                      marginBottom: "4px",
-                                    }}
-                                  >
-                                    [{(issue?.severity || "info").toUpperCase()}]
-                                    {issue?.method ? ` ${prettyMethod(issue.method)}` : ""}
-                                    {issue?.code ? ` — ${issue.code}` : ""}
-                                  </div>
-                                  <div
-                                    style={{
-                                      color: "#374151",
-                                      fontSize: "13px",
-                                      lineHeight: 1.6,
-                                    }}
-                                  >
-                                    {issue?.message || "No message provided."}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p style={styles.paragraph}>
-                              No warnings or inconsistencies detected.
-                            </p>
-                          )}
-                        </div>
-                      ))}
+                    <div
+                      style={{
+                        color: "#374151",
+                        fontSize: "13px",
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      {issue?.message || "No message provided."}
                     </div>
                   </div>
-                </SectionCard>
-              )}
+                ))}
+              </div>
+            ) : (
+              <p style={styles.paragraph}>
+                Checks ran and no warnings or inconsistencies were detected.
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  </SectionCard>
+)}
 
               <SectionCard
                 title="Overview"
@@ -3086,65 +3137,114 @@ const expectationSource =
   </div>
 ) : null}
 
-                <div style={styles.blockSpacer}>
-                  <div style={styles.twoColGrid}>
-                    <div style={styles.innerPanel}>
-                      <div style={styles.innerPanelTitle}>Root Validation</div>
+<div style={styles.blockSpacer}>
+  <div style={styles.twoColGrid}>
+    <div style={styles.innerPanel}>
+      <div style={styles.innerPanelTitle}>Root Validation</div>
 
-                      <div style={styles.inlineInfoText}>
-                        <b>Expected Roots</b> = {formatRoots(benchmarkInfo?.roots)}
-                      </div>
+      {(() => {
+        const expectedRoots = asArray(benchmarkInfo?.roots);
+        const observedRoots = asArray(detectedRoots);
 
-                      <div style={styles.inlineInfoText}>
-                        <b>Observed Roots</b> = {detectedRoots.length > 0 ? detectedRoots.join(", ") : "Not available"}
-                      </div>
+        const expectedCount = expectedRoots.length;
+        const observedCount = observedRoots.length;
+        const coveredCount =
+          expectedCount > 0
+            ? Math.min(observedCount, expectedCount)
+            : observedCount;
 
-                      <div style={styles.inlineInfoText}>
-                        <b>Coverage</b> = {detectedRoots.length} / {asArray(benchmarkInfo?.roots).length}
-                      </div>
-                    </div>
+        const status =
+          expectedCount === 0
+            ? "NOT AVAILABLE"
+            : observedCount === 0
+            ? "WARNING"
+            : observedCount < expectedCount
+            ? "WARNING"
+            : "PASS";
 
-                   
+        const statusColor =
+          status === "PASS"
+            ? "#15803d"
+            : status === "WARNING"
+            ? "#b45309"
+            : "#6b7280";
 
-                    <div style={styles.innerPanel}>
-                      <div style={styles.innerPanelTitle}>Key Findings</div>
-                      <InfoGrid
-                        items={[
-                          {
-                            label: "Methods Compared",
-                            value: String(executedMethods.length),
-                          },
-                          {
-                            label: "Best Success Rate",
-                            value: bestSuccessMethod
-                              ? `${prettyMethod(bestSuccessMethod.method)} (${formatPercent(
-                                  bestSuccessMethod.success_rate
-                                )})`
-                              : "-",
-                          },
-                          {
-                            label: "Fastest Median",
-                            value: fastestMedianMethod
-                              ? `${prettyMethod(
-                                  fastestMedianMethod.method
-                                )} (${formatNumber(
-                                  fastestMedianMethod.median_iter
-                                )})`
-                              : "-",
-                          },
-                          {
-                            label: "Lowest Failures",
-                            value: mostStableMethod
-                              ? `${prettyMethod(mostStableMethod.method)} (${formatNumber(
-                                  mostStableMethod.failure_count
-                                )})`
-                              : "-",
-                          },
-                        ]}
-                      />
-                    </div>
-                  </div>
-                </div>
+        return (
+          <>
+            <div style={styles.inlineInfoText}>
+              <b>Status</b>{" "}
+              <span style={{ color: statusColor, fontWeight: 700 }}>
+                {status}
+              </span>
+            </div>
+
+            <div style={styles.inlineInfoText}>
+              <b>Expected Roots</b> ={" "}
+              {expectedCount > 0 ? formatRoots(expectedRoots) : "Not available"}
+            </div>
+
+            <div style={styles.inlineInfoText}>
+              <b>Observed Roots</b> ={" "}
+              {observedCount > 0 ? observedRoots.join(", ") : "Not available"}
+            </div>
+
+            <div style={styles.inlineInfoText}>
+              <b>Coverage</b> = {coveredCount} /{" "}
+              {expectedCount > 0 ? expectedCount : "Not available"}
+            </div>
+
+            <div style={styles.inlineInfoText}>
+              <b>Interpretation</b> ={" "}
+              {expectedCount === 0
+                ? "Benchmark root metadata is not available, so direct root coverage validation cannot be performed."
+                : observedCount === 0
+                ? "No observed roots were detected. This suggests failure to recover benchmark roots under the selected experiment settings."
+                : observedCount < expectedCount
+                ? "Only part of the expected root set was recovered. Some benchmark roots may be missing from the observed basin structure."
+                : "Observed roots are consistent with benchmark root expectations at the count level."}
+            </div>
+          </>
+        );
+      })()}
+    </div>
+
+    <div style={styles.innerPanel}>
+      <div style={styles.innerPanelTitle}>Key Findings</div>
+      <InfoGrid
+        items={[
+          {
+            label: "Methods Compared",
+            value: String(executedMethods.length),
+          },
+          {
+            label: "Best Success Rate",
+            value: bestSuccessMethod
+              ? `${prettyMethod(bestSuccessMethod.method)} (${formatPercent(
+                  bestSuccessMethod.success_rate
+                )})`
+              : "-",
+          },
+          {
+            label: "Fastest Median",
+            value: fastestMedianMethod
+              ? `${prettyMethod(fastestMedianMethod.method)} (${formatNumber(
+                  fastestMedianMethod.median_iter
+                )})`
+              : "-",
+          },
+          {
+            label: "Lowest Failures",
+            value: mostStableMethod
+              ? `${prettyMethod(mostStableMethod.method)} (${formatNumber(
+                  mostStableMethod.failure_count
+                )})`
+              : "-",
+          },
+        ]}
+      />
+    </div>
+  </div>
+</div>
 
                 {overviewInterpretationNotes.length > 0 ? (
                   <div style={styles.blockSpacer}>
